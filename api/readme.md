@@ -25,7 +25,7 @@ Endpoint tersedia di `/api/health`, `/api/auth/login`, `/api/products`, dan `/ap
 
 MFA dapat diaktifkan per user dari form **Users** melalui opsi **Enable email OTP MFA**. Saat login berikutnya, user memasukkan kode OTP 6 digit yang berlaku selama 10 menit dan hanya dapat digunakan sekali.
 
-Untuk development, `.env` memakai `MAIL_DRIVER=log`; kode OTP dapat dilihat di `storage/logs/laravel-YYYY-MM-DD.log`. Untuk mengirim OTP sungguhan, ubah menjadi `smtp` dan isi `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM_ADDRESS`, serta `MAIL_FROM_NAME`.
+Untuk development, `.env` lokal memakai `MAIL_DRIVER=log`; kode OTP dapat dilihat di `storage/logs/laravel-YYYY-MM-DD.log`. Untuk mengirim OTP ke email sungguhan, salin konfigurasi SMTP dari `.env.example` ke `.env`, lalu isi `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM_ADDRESS`, dan `MAIL_FROM_NAME`. Jangan commit `.env` atau membagikan password SMTP.
 
 ## Catatan runtime
 
