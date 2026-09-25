@@ -13,6 +13,7 @@ const blankForm = { name: '', category: 'Electronics', price: '', stock: '', sta
 const blankUser = { name: '', email: '', password: '', role: 'staff', isActive: true, mfaEnabled: false }
 const API_URL = 'http://localhost:3001/api'
 const getInitials = (name) => name.split(' ').filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('')
+const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, Accept: 'application/json' })
 
 function UsersView({ users, onSave, onDelete }) {
   const [query, setQuery] = useState('')
@@ -33,12 +34,16 @@ function UsersView({ users, onSave, onDelete }) {
 }
 
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem('lumina-auth') === 'true')
+  const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem('lumina-auth') === 'true' && Boolean(localStorage.getItem('lumina-token')))
   const [currentUser, setCurrentUser] = useState(() => JSON.parse(localStorage.getItem('lumina-user') || 'null'))
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [loginError, setLoginError] = useState('')
   const [otpStep, setOtpStep] = useState(false)
   const [otp, setOtp] = useState('')
+  const [resetStep, setResetStep] = useState(false)
+  const [resetOtp, setResetOtp] = useState('')
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState('')
   const [products, setProducts] = useState(() => JSON.parse(localStorage.getItem('lumina-products') || 'null') || seedProducts)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All status')
@@ -51,19 +56,20 @@ function App() {
   useEffect(() => localStorage.setItem('lumina-products', JSON.stringify(products)), [products])
   useEffect(() => {
     if (!isAuthenticated) return
-    fetch(`${API_URL}/products`).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setProducts(data); setDatabaseOnline(true) }).catch(() => setDatabaseOnline(false))
+    fetch(`${API_URL}/products`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setProducts(data); setDatabaseOnline(true) }).catch(() => setDatabaseOnline(false))
   }, [isAuthenticated])
   useEffect(() => {
     if (!isAuthenticated) return
-    fetch(`${API_URL}/users`).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setUsers(data); setDatabaseOnline(true) }).catch(() => setDatabaseOnline(false))
+    fetch(`${API_URL}/users`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setUsers(data); setDatabaseOnline(true) }).catch(() => setDatabaseOnline(false))
   }, [isAuthenticated])
   const filteredProducts = useMemo(() => products.filter((product) => `${product.name} ${product.category}`.toLowerCase().includes(query.toLowerCase()) && (filter === 'All status' || product.status === filter)), [products, query, filter])
   const totalValue = products.reduce((sum, product) => sum + product.price * product.stock, 0)
   const activeProducts = products.filter((product) => product.status === 'Active').length
   const lowStock = products.filter((product) => product.status === 'Low stock' || product.stock === 0).length
-  const completeLogin = (user) => {
+  const completeLogin = (user, token) => {
     localStorage.setItem('lumina-auth', 'true')
     localStorage.setItem('lumina-user', JSON.stringify(user))
+    localStorage.setItem('lumina-token', token)
     setCurrentUser(user)
     setIsAuthenticated(true)
     setLoginError('')
@@ -71,11 +77,11 @@ function App() {
   const handleLogin = async (event) => {
     event.preventDefault()
     try {
-      const response = await fetch(`${API_URL}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(loginForm) })
+      const response = await fetch(`${API_URL}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(loginForm) })
       if (!response.ok) { const error = await response.json(); throw new Error(error.message) }
       const result = await response.json()
       if (result.requiresOtp) { setOtpStep(true); setLoginError(''); return }
-      completeLogin(result.user)
+      completeLogin(result.user, result.token)
     } catch (error) { setLoginError(error.message || 'Login gagal. Pastikan API aktif.') }
   }
   const handleVerifyOtp = async (event) => {
@@ -84,7 +90,7 @@ function App() {
       const response = await fetch(`${API_URL}/auth/otp/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: loginForm.email, otp }) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.message)
-      completeLogin(result.user)
+      completeLogin(result.user, result.token)
     } catch (error) { setLoginError(error.message || 'Verifikasi OTP gagal.') }
   }
   const resendOtp = async () => {
@@ -92,7 +98,25 @@ function App() {
     const result = await response.json()
     setLoginError(response.ok ? result.message : result.message || 'OTP gagal dikirim ulang.')
   }
-  const handleLogout = () => { localStorage.removeItem('lumina-auth'); localStorage.removeItem('lumina-user'); setCurrentUser(null); setIsAuthenticated(false); setLoginForm({ email: '', password: '' }); setOtp(''); setOtpStep(false) }
+  const requestPasswordReset = async (event) => {
+    event.preventDefault()
+    const response = await fetch(`${API_URL}/auth/password/forgot`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: loginForm.email }) })
+    const result = await response.json()
+    if (response.ok) setResetStep(true)
+    setLoginError(result.message || 'Permintaan reset password gagal.')
+  }
+  const resetPasswordWithOtp = async (event) => {
+    event.preventDefault()
+    const response = await fetch(`${API_URL}/auth/password/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: loginForm.email, otp: resetOtp, password: resetPassword, password_confirmation: resetPasswordConfirmation }) })
+    const result = await response.json()
+    if (!response.ok) { setLoginError(result.message || 'Reset password gagal.'); return }
+    setResetStep(false)
+    setResetOtp('')
+    setResetPassword('')
+    setResetPasswordConfirmation('')
+    setLoginError(result.message)
+  }
+  const handleLogout = () => { localStorage.removeItem('lumina-auth'); localStorage.removeItem('lumina-user'); localStorage.removeItem('lumina-token'); setCurrentUser(null); setIsAuthenticated(false); setLoginForm({ email: '', password: '' }); setOtp(''); setOtpStep(false) }
   const openCreateModal = () => { setEditingId(null); setForm(blankForm); setIsModalOpen(true) }
   const openEditModal = (product) => { setEditingId(product.id); setForm({ ...product, price: String(product.price), stock: String(product.stock) }); setIsModalOpen(true) }
   const handleMediaChange = (event) => {
@@ -105,10 +129,10 @@ function App() {
   }
   const handleSubmit = async (event) => { event.preventDefault(); const stock = Number(form.stock) || 0; const product = { ...form, price: Number(form.price) || 0, stock, status: stock === 0 ? 'Out of stock' : form.status }; try { const response = await fetch(`${API_URL}/products${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(product) }); if (!response.ok) throw new Error('Save failed'); const savedProduct = await response.json(); setProducts((current) => editingId ? current.map((item) => item.id === editingId ? savedProduct : item) : [savedProduct, ...current]); setDatabaseOnline(true) } catch { setProducts((current) => editingId ? current.map((item) => item.id === editingId ? { ...product, id: editingId } : item) : [{ ...product, id: Date.now() }, ...current]); setDatabaseOnline(false) } setIsModalOpen(false) }
   const removeProduct = async (id) => { if (!window.confirm('Hapus produk ini dari katalog?')) return; try { const response = await fetch(`${API_URL}/products/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error('Delete failed'); setDatabaseOnline(true) } catch { setDatabaseOnline(false) } setProducts((current) => current.filter((product) => product.id !== id)) }
-  const saveUser = async (user, editingId) => { try { const response = await fetch(`${API_URL}/users${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(user) }); if (!response.ok) { const error = await response.json(); throw new Error(error.message) } const savedUser = await response.json(); setUsers((current) => editingId ? current.map((item) => item.id === editingId ? savedUser : item) : [savedUser, ...current]); setDatabaseOnline(true) } catch (error) { window.alert(error.message || 'User gagal disimpan.') } }
-  const removeUser = async (id) => { if (!window.confirm('Hapus user ini dari workspace?')) return; try { const response = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error('Delete failed'); setUsers((current) => current.filter((user) => user.id !== id)); setDatabaseOnline(true) } catch { window.alert('User gagal dihapus. Pastikan API aktif.') } }
+  const saveUser = async (user, editingId) => { try { const response = await fetch(`${API_URL}/users${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(user) }); if (!response.ok) { const error = await response.json(); throw new Error(error.message) } const savedUser = await response.json(); setUsers((current) => editingId ? current.map((item) => item.id === editingId ? savedUser : item) : [savedUser, ...current]); setDatabaseOnline(true) } catch (error) { window.alert(error.message || 'User gagal disimpan.') } }
+  const removeUser = async (id) => { if (!window.confirm('Hapus user ini dari workspace?')) return; try { const response = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE', headers: authHeaders() }); if (!response.ok) throw new Error('Delete failed'); setUsers((current) => current.filter((user) => user.id !== id)); setDatabaseOnline(true) } catch { window.alert('User gagal dihapus. Pastikan API aktif.') } }
 
-  if (!isAuthenticated) return <div className="login-page"><div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div><form className="login-card" onSubmit={otpStep ? handleVerifyOtp : handleLogin}><div className="login-brand"><span className="brand-mark"><Activity size={18} /></span><span>Lumina</span></div><p className="eyebrow">{otpStep ? 'MFA verification' : 'Welcome back'}</p><h1>{otpStep ? 'Enter your OTP code' : 'Sign in to your workspace'}</h1><p className="login-subtitle">{otpStep ? `A 6-digit code was sent to ${loginForm.email}.` : 'Manage your products and inventory in one calm place.'}</p><label>Email address<input autoFocus={!otpStep} required disabled={otpStep} type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="you@company.com" /></label>{!otpStep && <label>Password<input required type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder="Enter your password" /></label>}{otpStep && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}{loginError && <p className="login-error">{loginError}</p>}<button className="primary-button login-button" type="submit">{otpStep ? 'Verify OTP' : 'Sign in'} <ChevronDown size={16} className="login-arrow" /></button>{otpStep && <button type="button" className="secondary-button" onClick={resendOtp}>Resend OTP</button>}<p className="demo-hint">{otpStep ? 'The code expires in 10 minutes.' : 'Use an active account from the users table.'}</p></form></div>
+  if (!isAuthenticated) return <div className="login-page"><div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div><form className="login-card" onSubmit={resetStep ? resetPasswordWithOtp : otpStep ? handleVerifyOtp : handleLogin}><div className="login-brand"><span className="brand-mark"><Activity size={18} /></span><span>Lumina</span></div><p className="eyebrow">{resetStep ? 'Password reset' : otpStep ? 'MFA verification' : 'Welcome back'}</p><h1>{resetStep ? 'Create a new password' : otpStep ? 'Enter your OTP code' : 'Sign in to your workspace'}</h1><p className="login-subtitle">{resetStep ? `Enter the reset code sent to ${loginForm.email}.` : otpStep ? `A 6-digit code was sent to ${loginForm.email}.` : 'Manage your products and inventory in one calm place.'}</p><label>Email address<input autoFocus={!otpStep && !resetStep} required disabled={otpStep || resetStep} type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="you@company.com" /></label>{!otpStep && !resetStep && <label>Password<input required type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder="Enter your password" /></label>}{(otpStep || resetStep) && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={resetStep ? resetOtp : otp} onChange={(event) => (resetStep ? setResetOtp : setOtp)(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}{resetStep && <><label>New password<input required minLength="8" type="password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} placeholder="At least 8 characters" /></label><label>Confirm password<input required minLength="8" type="password" value={resetPasswordConfirmation} onChange={(event) => setResetPasswordConfirmation(event.target.value)} placeholder="Repeat new password" /></label></>}{loginError && <p className="login-error">{loginError}</p>}<button className="primary-button login-button" type="submit">{resetStep ? 'Reset password' : otpStep ? 'Verify OTP' : 'Sign in'} <ChevronDown size={16} className="login-arrow" /></button>{otpStep && <button type="button" className="secondary-button" onClick={resendOtp}>Resend OTP</button>}{!otpStep && !resetStep && <button type="button" className="secondary-button" onClick={requestPasswordReset}>Forgot password?</button>}{resetStep && <button type="button" className="secondary-button" onClick={() => setResetStep(false)}>Back to sign in</button>}<p className="demo-hint">{resetStep || otpStep ? 'The code expires in 10 minutes.' : 'Use an active account from the users table.'}</p></form></div>
 
   return (
     <div className="app-shell">

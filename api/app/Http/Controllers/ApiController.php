@@ -7,6 +7,7 @@ use App\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
@@ -33,7 +34,7 @@ class ApiController extends Controller
             return response()->json(['requiresOtp' => true, 'email' => $user->email, 'message' => 'Kode OTP telah dikirim ke email Anda.'], 202);
         }
 
-        return response()->json(['user' => $this->userPayload($user)]);
+        return response()->json($this->authenticatedPayload($user));
     }
 
     public function verifyOtp(Request $request)
@@ -63,7 +64,7 @@ class ApiController extends Controller
         }
 
         $user->update(['otp_hash' => null, 'otp_expires_at' => null, 'otp_attempts' => 0]);
-        return response()->json(['user' => $this->userPayload($user->fresh())]);
+        return response()->json($this->authenticatedPayload($user->fresh()));
     }
 
     public function resendOtp(Request $request)
@@ -78,6 +79,52 @@ class ApiController extends Controller
 
         $this->sendOtp($user);
         return response()->json(['message' => 'Kode OTP baru telah dikirim.'], 202);
+    }
+
+    public function requestPasswordReset(Request $request)
+    {
+        $data = Validator::make($request->all(), ['email' => 'required|email'])->validate();
+        $user = User::where('email', strtolower(trim($data['email'])))->where('is_active', true)->first();
+
+        if ($user) {
+            $this->sendPasswordResetOtp($user);
+        }
+
+        return response()->json(['message' => 'Jika email terdaftar, kode reset password telah dikirim.'], 202);
+    }
+
+    public function resetPassword(Request $request)
+    {
+        $data = Validator::make($request->all(), [
+            'email' => 'required|email',
+            'otp' => 'required|digits:6',
+            'password' => 'required|string|min:8|confirmed',
+        ])->validate();
+
+        $user = User::where('email', strtolower(trim($data['email'])))->where('is_active', true)->first();
+        if (!$user || !$user->password_reset_otp_hash || !$user->password_reset_otp_expires_at || now()->greaterThan($user->password_reset_otp_expires_at)) {
+            return response()->json(['message' => 'Kode reset sudah kedaluwarsa.'], 422);
+        }
+
+        if ($user->password_reset_otp_attempts >= 5) {
+            $user->update(['password_reset_otp_hash' => null, 'password_reset_otp_expires_at' => null, 'password_reset_otp_attempts' => 0]);
+            return response()->json(['message' => 'Terlalu banyak percobaan. Minta kode reset baru.'], 429);
+        }
+
+        if (!Hash::check($data['otp'], $user->password_reset_otp_hash)) {
+            $user->increment('password_reset_otp_attempts');
+            return response()->json(['message' => 'Kode reset tidak sesuai.'], 422);
+        }
+
+        $user->update([
+            'password_hash' => Hash::make($data['password']),
+            'password_reset_otp_hash' => null,
+            'password_reset_otp_expires_at' => null,
+            'password_reset_otp_attempts' => 0,
+        ]);
+        DB::table('personal_access_tokens')->where('tokenable_type', User::class)->where('tokenable_id', $user->id)->delete();
+
+        return response()->json(['message' => 'Password berhasil diubah. Silakan login kembali.']);
     }
 
     public function products()
@@ -215,6 +262,47 @@ class ApiController extends Controller
         Mail::raw("Kode OTP Lumina Anda: {$otp}\n\nKode ini berlaku selama 10 menit dan hanya dapat digunakan sekali.", function ($message) use ($user) {
             $message->to($user->email)->subject('Kode OTP Lumina');
         });
+    }
+
+    private function sendPasswordResetOtp(User $user)
+    {
+        $otp = (string) random_int(100000, 999999);
+        $user->update([
+            'password_reset_otp_hash' => Hash::make($otp),
+            'password_reset_otp_expires_at' => now()->addMinutes(10),
+            'password_reset_otp_attempts' => 0,
+        ]);
+
+        Mail::raw("Kode reset password Lumina Anda: {$otp}\n\nKode ini berlaku selama 10 menit.", function ($message) use ($user) {
+            $message->to($user->email)->subject('Reset password Lumina');
+        });
+    }
+
+    private function authenticatedPayload(User $user)
+    {
+        DB::table('personal_access_tokens')->where('tokenable_type', User::class)->where('tokenable_id', $user->id)->delete();
+
+        return [
+            'user' => $this->userPayload($user),
+            'token' => $this->createToken($user),
+        ];
+    }
+
+    private function createToken(User $user)
+    {
+        $plainToken = bin2hex(random_bytes(32));
+        DB::table('personal_access_tokens')->insert([
+            'tokenable_type' => User::class,
+            'tokenable_id' => $user->id,
+            'name' => 'lumina-web',
+            'token' => hash('sha256', $plainToken),
+            'abilities' => json_encode(['*']),
+            'expires_at' => now()->addDays(30),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $plainToken;
     }
 
     public function productPayload(Product $product)
