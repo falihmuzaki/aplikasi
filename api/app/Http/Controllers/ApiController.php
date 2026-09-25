@@ -6,6 +6,7 @@ use App\Product;
 use App\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
@@ -27,7 +28,56 @@ class ApiController extends Controller
             return response()->json(['message' => 'Email atau password tidak sesuai.'], 401);
         }
 
+        if ($user->mfa_enabled) {
+            $this->sendOtp($user);
+            return response()->json(['requiresOtp' => true, 'email' => $user->email, 'message' => 'Kode OTP telah dikirim ke email Anda.'], 202);
+        }
+
         return response()->json(['user' => $this->userPayload($user)]);
+    }
+
+    public function verifyOtp(Request $request)
+    {
+        $data = Validator::make($request->all(), [
+            'email' => 'required|email',
+            'otp' => 'required|digits:6',
+        ])->validate();
+
+        $user = User::where('email', strtolower(trim($data['email'])))
+            ->where('is_active', true)
+            ->where('mfa_enabled', true)
+            ->first();
+
+        if (!$user || !$user->otp_hash || !$user->otp_expires_at || now()->greaterThan($user->otp_expires_at)) {
+            return response()->json(['message' => 'Kode OTP sudah kedaluwarsa. Silakan kirim ulang.'], 422);
+        }
+
+        if ($user->otp_attempts >= 5) {
+            $user->update(['otp_hash' => null, 'otp_expires_at' => null, 'otp_attempts' => 0]);
+            return response()->json(['message' => 'Terlalu banyak percobaan. Silakan kirim ulang OTP.'], 429);
+        }
+
+        if (!Hash::check($data['otp'], $user->otp_hash)) {
+            $user->increment('otp_attempts');
+            return response()->json(['message' => 'Kode OTP tidak sesuai.'], 422);
+        }
+
+        $user->update(['otp_hash' => null, 'otp_expires_at' => null, 'otp_attempts' => 0]);
+        return response()->json(['user' => $this->userPayload($user->fresh())]);
+    }
+
+    public function resendOtp(Request $request)
+    {
+        $data = Validator::make($request->all(), ['email' => 'required|email'])->validate();
+        $user = User::where('email', strtolower(trim($data['email'])))
+            ->where('is_active', true)
+            ->where('mfa_enabled', true)
+            ->first();
+
+        if (!$user) return response()->json(['message' => 'Permintaan OTP tidak valid.'], 422);
+
+        $this->sendOtp($user);
+        return response()->json(['message' => 'Kode OTP baru telah dikirim.'], 202);
     }
 
     public function products()
@@ -138,6 +188,7 @@ class ApiController extends Controller
             'email' => ['required', 'email', 'max:255', $emailRule],
             'role' => 'required|in:admin,staff',
             'isActive' => 'boolean',
+            'mfaEnabled' => 'boolean',
             'password' => ($updating ? 'nullable' : 'required') . '|string|min:6',
         ];
         $data = Validator::make($request->all(), $rules)->validate();
@@ -147,8 +198,23 @@ class ApiController extends Controller
             'email' => strtolower($data['email']),
             'role' => $data['role'],
             'is_active' => $data['isActive'] ?? true,
+            'mfa_enabled' => $data['mfaEnabled'] ?? false,
             'password' => $data['password'] ?? null,
         ];
+    }
+
+    private function sendOtp(User $user)
+    {
+        $otp = (string) random_int(100000, 999999);
+        $user->update([
+            'otp_hash' => Hash::make($otp),
+            'otp_expires_at' => now()->addMinutes(10),
+            'otp_attempts' => 0,
+        ]);
+
+        Mail::raw("Kode OTP Lumina Anda: {$otp}\n\nKode ini berlaku selama 10 menit dan hanya dapat digunakan sekali.", function ($message) use ($user) {
+            $message->to($user->email)->subject('Kode OTP Lumina');
+        });
     }
 
     public function productPayload(Product $product)
@@ -174,6 +240,7 @@ class ApiController extends Controller
             'email' => $user->email,
             'role' => $user->role,
             'isActive' => (bool) $user->is_active,
+            'mfaEnabled' => (bool) $user->mfa_enabled,
             'createdAt' => $user->created_at,
             'updatedAt' => $user->updated_at,
         ];

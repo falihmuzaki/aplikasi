@@ -17,21 +17,21 @@ class User extends Model implements AuthenticatableContract
      */
     protected $table = 'users';
 
-    protected $fillable = ['name', 'email', 'password_hash', 'role', 'is_active'];
+    protected $fillable = ['name', 'email', 'password_hash', 'role', 'is_active', 'mfa_enabled', 'otp_hash', 'otp_expires_at', 'otp_attempts'];
 
     /**
      * The attributes that should be hidden for arrays.
      *
      * @var array
      */
-    protected $hidden = ['password_hash'];
+    protected $hidden = ['password_hash', 'otp_hash'];
 
     /**
      * The attributes that should be cast to native types.
      *
      * @var array
      */
-    protected $casts = ['id' => 'integer', 'is_active' => 'boolean'];
+    protected $casts = ['id' => 'integer', 'is_active' => 'boolean', 'mfa_enabled' => 'boolean', 'otp_attempts' => 'integer', 'otp_expires_at' => 'datetime'];
 
     public function getAuthPassword()
     {

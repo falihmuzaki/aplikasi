@@ -21,6 +21,12 @@ php artisan serve --host=127.0.0.1 --port=3001
 
 Endpoint tersedia di `/api/health`, `/api/auth/login`, `/api/products`, dan `/api/users` dengan method CRUD yang sesuai.
 
+## OTP dan MFA
+
+MFA dapat diaktifkan per user dari form **Users** melalui opsi **Enable email OTP MFA**. Saat login berikutnya, user memasukkan kode OTP 6 digit yang berlaku selama 10 menit dan hanya dapat digunakan sekali.
+
+Untuk development, `.env` memakai `MAIL_DRIVER=log`; kode OTP dapat dilihat di `storage/logs/laravel-YYYY-MM-DD.log`. Untuk mengirim OTP sungguhan, ubah menjadi `smtp` dan isi `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM_ADDRESS`, serta `MAIL_FROM_NAME`.
+
 ## Catatan runtime
 
 Project ini menggunakan Laravel 12 dan membutuhkan PHP 8.2 atau lebih baru. PHP 8.2 dengan `libpq` modern mendukung autentikasi PostgreSQL SCRAM.

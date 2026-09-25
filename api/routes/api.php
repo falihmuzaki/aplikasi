@@ -15,6 +15,8 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/health', 'ApiController@health');
 Route::post('/auth/login', 'ApiController@login');
+Route::post('/auth/otp/verify', 'ApiController@verifyOtp');
+Route::post('/auth/otp/resend', 'ApiController@resendOtp');
 
 Route::get('/products', 'ApiController@products');
 Route::post('/products', 'ApiController@storeProduct');

@@ -10,7 +10,7 @@ const seedProducts = [
   { id: 5, name: 'Running Sneakers', category: 'Fashion', price: 112, stock: 3, status: 'Low stock' },
 ]
 const blankForm = { name: '', category: 'Electronics', price: '', stock: '', status: 'Active', media: null }
-const blankUser = { name: '', email: '', password: '', role: 'staff', isActive: true }
+const blankUser = { name: '', email: '', password: '', role: 'staff', isActive: true, mfaEnabled: false }
 const API_URL = 'http://localhost:3001/api'
 const getInitials = (name) => name.split(' ').filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('')
 
@@ -28,7 +28,7 @@ function UsersView({ users, onSave, onDelete }) {
     <header className="topbar"><div><p className="breadcrumb">Workspace / <span>Users</span></p><h1>User management</h1></div><button className="primary-button" onClick={openCreate}><UserPlus size={18} /> Add user</button></header>
     <section className="welcome-row"><div><p className="muted">Access and permissions</p><h2>Workspace users</h2><p className="muted">Manage who can access your inventory workspace.</p></div><div className="sync-status"><span className="pulse"></span> PostgreSQL synced</div></section>
     <section className="catalog-panel"><div className="panel-heading"><div><h2>All users</h2><p className="muted">{users.length} registered account{users.length === 1 ? '' : 's'}.</p></div></div><div className="toolbar"><label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users..." /></label></div><div className="table-wrap"><table><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{filteredUsers.map((user) => <tr key={user.id}><td><div className="product-cell"><span className="user-avatar"><UserRound size={16} /></span><strong>{user.name}</strong></div></td><td>{user.email}</td><td><span className={`role-badge ${user.role}`}>{user.role}</span></td><td><span className={`status ${user.isActive ? 'active' : 'out-of-stock'}`}><span></span>{user.isActive ? 'Active' : 'Inactive'}</span></td><td><div className="actions"><button title="Edit user" onClick={() => openEdit(user)}><Pencil size={16} /></button><button title="Delete user" onClick={() => onDelete(user.id)}><Trash2 size={16} /></button></div></td></tr>)}{filteredUsers.length === 0 && <tr><td colSpan="5" className="empty-state">No users match your search.</td></tr>}</tbody></table></div><div className="table-footer"><span>Showing <b>{filteredUsers.length}</b> of <b>{users.length}</b> users</span></div></section>
-    {isOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setIsOpen(false)}><form className="modal" onSubmit={submit}><div className="modal-heading"><div><h2>{editingId ? 'Edit user' : 'Add user'}</h2><p className="muted">Set account access and permissions.</p></div><button type="button" className="close-button" onClick={() => setIsOpen(false)}><X size={19} /></button></div><label>Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="e.g. Alex Rivera" /></label><label>Email address<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="name@company.com" /></label><label>Password{editingId && <small className="field-hint">Leave empty to keep the current password.</small>}<input required={!editingId} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder={editingId ? 'Optional new password' : 'Create a password'} /></label><label>Role<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="admin">Admin</option><option value="staff">Staff</option></select></label><label className="toggle-row"><input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} /> Active account</label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setIsOpen(false)}>Cancel</button><button type="submit" className="primary-button">{editingId ? 'Save changes' : 'Add user'}</button></div></form></div>}
+    {isOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setIsOpen(false)}><form className="modal" onSubmit={submit}><div className="modal-heading"><div><h2>{editingId ? 'Edit user' : 'Add user'}</h2><p className="muted">Set account access and permissions.</p></div><button type="button" className="close-button" onClick={() => setIsOpen(false)}><X size={19} /></button></div><label>Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="e.g. Alex Rivera" /></label><label>Email address<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="name@company.com" /></label><label>Password{editingId && <small className="field-hint">Leave empty to keep the current password.</small>}<input required={!editingId} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder={editingId ? 'Optional new password' : 'Create a password'} /></label><label>Role<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="admin">Admin</option><option value="staff">Staff</option></select></label><label className="toggle-row"><input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} /> Active account</label><label className="toggle-row"><input type="checkbox" checked={form.mfaEnabled} onChange={(event) => setForm({ ...form, mfaEnabled: event.target.checked })} /> Enable email OTP MFA</label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setIsOpen(false)}>Cancel</button><button type="submit" className="primary-button">{editingId ? 'Save changes' : 'Add user'}</button></div></form></div>}
   </>
 }
 
@@ -37,6 +37,8 @@ function App() {
   const [currentUser, setCurrentUser] = useState(() => JSON.parse(localStorage.getItem('lumina-user') || 'null'))
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [loginError, setLoginError] = useState('')
+  const [otpStep, setOtpStep] = useState(false)
+  const [otp, setOtp] = useState('')
   const [products, setProducts] = useState(() => JSON.parse(localStorage.getItem('lumina-products') || 'null') || seedProducts)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('All status')
@@ -59,20 +61,38 @@ function App() {
   const totalValue = products.reduce((sum, product) => sum + product.price * product.stock, 0)
   const activeProducts = products.filter((product) => product.status === 'Active').length
   const lowStock = products.filter((product) => product.status === 'Low stock' || product.stock === 0).length
+  const completeLogin = (user) => {
+    localStorage.setItem('lumina-auth', 'true')
+    localStorage.setItem('lumina-user', JSON.stringify(user))
+    setCurrentUser(user)
+    setIsAuthenticated(true)
+    setLoginError('')
+  }
   const handleLogin = async (event) => {
     event.preventDefault()
     try {
       const response = await fetch(`${API_URL}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(loginForm) })
       if (!response.ok) { const error = await response.json(); throw new Error(error.message) }
       const result = await response.json()
-      localStorage.setItem('lumina-auth', 'true')
-      localStorage.setItem('lumina-user', JSON.stringify(result.user))
-      setCurrentUser(result.user)
-      setIsAuthenticated(true)
-      setLoginError('')
+      if (result.requiresOtp) { setOtpStep(true); setLoginError(''); return }
+      completeLogin(result.user)
     } catch (error) { setLoginError(error.message || 'Login gagal. Pastikan API aktif.') }
   }
-  const handleLogout = () => { localStorage.removeItem('lumina-auth'); localStorage.removeItem('lumina-user'); setCurrentUser(null); setIsAuthenticated(false); setLoginForm({ email: '', password: '' }) }
+  const handleVerifyOtp = async (event) => {
+    event.preventDefault()
+    try {
+      const response = await fetch(`${API_URL}/auth/otp/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: loginForm.email, otp }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.message)
+      completeLogin(result.user)
+    } catch (error) { setLoginError(error.message || 'Verifikasi OTP gagal.') }
+  }
+  const resendOtp = async () => {
+    const response = await fetch(`${API_URL}/auth/otp/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ email: loginForm.email }) })
+    const result = await response.json()
+    setLoginError(response.ok ? result.message : result.message || 'OTP gagal dikirim ulang.')
+  }
+  const handleLogout = () => { localStorage.removeItem('lumina-auth'); localStorage.removeItem('lumina-user'); setCurrentUser(null); setIsAuthenticated(false); setLoginForm({ email: '', password: '' }); setOtp(''); setOtpStep(false) }
   const openCreateModal = () => { setEditingId(null); setForm(blankForm); setIsModalOpen(true) }
   const openEditModal = (product) => { setEditingId(product.id); setForm({ ...product, price: String(product.price), stock: String(product.stock) }); setIsModalOpen(true) }
   const handleMediaChange = (event) => {
@@ -88,7 +108,7 @@ function App() {
   const saveUser = async (user, editingId) => { try { const response = await fetch(`${API_URL}/users${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(user) }); if (!response.ok) { const error = await response.json(); throw new Error(error.message) } const savedUser = await response.json(); setUsers((current) => editingId ? current.map((item) => item.id === editingId ? savedUser : item) : [savedUser, ...current]); setDatabaseOnline(true) } catch (error) { window.alert(error.message || 'User gagal disimpan.') } }
   const removeUser = async (id) => { if (!window.confirm('Hapus user ini dari workspace?')) return; try { const response = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error('Delete failed'); setUsers((current) => current.filter((user) => user.id !== id)); setDatabaseOnline(true) } catch { window.alert('User gagal dihapus. Pastikan API aktif.') } }
 
-  if (!isAuthenticated) return <div className="login-page"><div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div><form className="login-card" onSubmit={handleLogin}><div className="login-brand"><span className="brand-mark"><Activity size={18} /></span><span>Lumina</span></div><p className="eyebrow">Welcome back</p><h1>Sign in to your workspace</h1><p className="login-subtitle">Manage your products and inventory in one calm place.</p><label>Email address<input autoFocus required type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="you@company.com" /></label><label>Password<input required type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder="Enter your password" /></label>{loginError && <p className="login-error">{loginError}</p>}<button className="primary-button login-button" type="submit">Sign in <ChevronDown size={16} className="login-arrow" /></button><p className="demo-hint">Use an active account from the users table.</p></form></div>
+  if (!isAuthenticated) return <div className="login-page"><div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div><form className="login-card" onSubmit={otpStep ? handleVerifyOtp : handleLogin}><div className="login-brand"><span className="brand-mark"><Activity size={18} /></span><span>Lumina</span></div><p className="eyebrow">{otpStep ? 'MFA verification' : 'Welcome back'}</p><h1>{otpStep ? 'Enter your OTP code' : 'Sign in to your workspace'}</h1><p className="login-subtitle">{otpStep ? `A 6-digit code was sent to ${loginForm.email}.` : 'Manage your products and inventory in one calm place.'}</p><label>Email address<input autoFocus={!otpStep} required disabled={otpStep} type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="you@company.com" /></label>{!otpStep && <label>Password<input required type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder="Enter your password" /></label>}{otpStep && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}{loginError && <p className="login-error">{loginError}</p>}<button className="primary-button login-button" type="submit">{otpStep ? 'Verify OTP' : 'Sign in'} <ChevronDown size={16} className="login-arrow" /></button>{otpStep && <button type="button" className="secondary-button" onClick={resendOtp}>Resend OTP</button>}<p className="demo-hint">{otpStep ? 'The code expires in 10 minutes.' : 'Use an active account from the users table.'}</p></form></div>
 
   return (
     <div className="app-shell">
