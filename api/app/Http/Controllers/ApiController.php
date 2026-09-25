@@ -7,6 +7,7 @@ use App\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class ApiController extends Controller
 {
@@ -127,9 +128,14 @@ class ApiController extends Controller
 
     private function validateUser(Request $request, $updating)
     {
+        $emailRule = Rule::unique('users', 'email');
+        if ($updating) {
+            $emailRule->ignore($request->route('id'));
+        }
+
         $rules = [
             'name' => 'required|string|max:120',
-            'email' => 'required|email|max:255|unique:users,email,' . $request->route('id'),
+            'email' => ['required', 'email', 'max:255', $emailRule],
             'role' => 'required|in:admin,staff',
             'isActive' => 'boolean',
             'password' => ($updating ? 'nullable' : 'required') . '|string|min:6',
