@@ -6,6 +6,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
+import { sendOtpEmail } from './mailer.js'
 
 const { Pool } = pg
 const app = express()
@@ -16,8 +17,11 @@ const schemaPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sche
 app.use(cors())
 app.use(express.json({ limit: '8mb' }))
 
+const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || 'lumina-dev-token-secret-change-me'
+const TOKEN_TTL_SECONDS = 7 * 24 * 3600
+
 const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, created_at, updated_at'
-const userFields = 'id, name, email, role, is_active, created_at, updated_at'
+const userFields = 'id, name, email, role, is_active, mfa_enabled, created_at, updated_at'
 
 function normalizeProduct(row) {
   return {
@@ -52,7 +56,53 @@ function verifyPassword(password, storedHash) {
 }
 
 function normalizeUser(row) {
-  return { id: Number(row.id), name: row.name, email: row.email, role: row.role, isActive: row.is_active, createdAt: row.created_at, updatedAt: row.updated_at }
+  return { id: Number(row.id), name: row.name, email: row.email, role: row.role, isActive: row.is_active, mfaEnabled: row.mfa_enabled, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function signToken(uid) {
+  const payload = Buffer.from(JSON.stringify({ uid, exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS })).toString('base64url')
+  const signature = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('base64url')
+  return `${payload}.${signature}`
+}
+
+function verifyToken(token) {
+  const [payload, signature] = String(token || '').split('.')
+  if (!payload || !signature) return null
+  const expected = crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payload).digest('base64url')
+  const signatureBuffer = Buffer.from(signature)
+  const expectedBuffer = Buffer.from(expected)
+  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return null
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
+    if (!data.uid || typeof data.exp !== 'number' || data.exp <= Math.floor(Date.now() / 1000)) return null
+    return { uid: data.uid }
+  } catch { return null }
+}
+
+function generateOtp() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0')
+}
+
+function hashOtp(code) {
+  const salt = crypto.randomBytes(16).toString('hex')
+  return `${salt}:${crypto.scryptSync(code, salt, 64).toString('hex')}`
+}
+
+function verifyOtp(code, storedHash) {
+  const [salt, hash] = String(storedHash || '').split(':')
+  if (!salt || !hash) return false
+  const derivedHash = crypto.scryptSync(code, salt, 64)
+  const expectedHash = Buffer.from(hash, 'hex')
+  return expectedHash.length === derivedHash.length && crypto.timingSafeEqual(expectedHash, derivedHash)
+}
+
+function requireAuth(request, response, next) {
+  const header = request.headers.authorization || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7) : ''
+  const payload = verifyToken(token)
+  if (!payload) return response.status(401).json({ message: 'Sesi tidak valid. Silakan masuk kembali.' })
+  request.userId = payload.uid
+  next()
 }
 
 app.get('/api/health', async (_request, response) => {
@@ -67,11 +117,78 @@ app.post('/api/auth/login', async (request, response, next) => {
     const result = await pool.query(`SELECT ${userFields}, password_hash FROM users WHERE email=$1 AND is_active=TRUE`, [email])
     const user = result.rows[0]
     if (!user || !verifyPassword(password, user.password_hash)) return response.status(401).json({ message: 'Email atau password tidak sesuai.' })
-    response.json({ user: normalizeUser(user) })
+    if (user.mfa_enabled) {
+      const code = generateOtp()
+      await pool.query("UPDATE users SET login_otp_hash=$1, login_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$2", [hashOtp(code), user.id])
+      await sendOtpEmail({ to: user.email, code, purpose: 'login' })
+      return response.json({ requiresOtp: true })
+    }
+    response.json({ user: normalizeUser(user), token: signToken(user.id) })
   } catch (error) { next(error) }
 })
 
-app.get('/api/products', async (_request, response, next) => {
+app.post('/api/auth/otp/verify', async (request, response, next) => {
+  try {
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const otp = String(request.body.otp || '')
+    const result = await pool.query(`SELECT ${userFields}, login_otp_hash, login_otp_expires_at FROM users WHERE email=$1 AND is_active=TRUE`, [email])
+    const user = result.rows[0]
+    if (!user || !user.login_otp_hash || new Date(user.login_otp_expires_at) <= new Date() || !verifyOtp(otp, user.login_otp_hash)) {
+      return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
+    }
+    await pool.query('UPDATE users SET login_otp_hash=NULL, login_otp_expires_at=NULL, updated_at=NOW() WHERE id=$1', [user.id])
+    response.json({ user: normalizeUser(user), token: signToken(user.id) })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/otp/resend', async (request, response, next) => {
+  try {
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const result = await pool.query('SELECT id, email FROM users WHERE email=$1 AND is_active=TRUE', [email])
+    const user = result.rows[0]
+    if (user) {
+      const code = generateOtp()
+      await pool.query("UPDATE users SET login_otp_hash=$1, login_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$2", [hashOtp(code), user.id])
+      await sendOtpEmail({ to: user.email, code, purpose: 'login' })
+    }
+    response.json({ message: 'Kode OTP baru telah dikirim.' })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/password/forgot', async (request, response, next) => {
+  try {
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const result = await pool.query('SELECT id, email FROM users WHERE email=$1 AND is_active=TRUE', [email])
+    const user = result.rows[0]
+    if (user) {
+      const code = generateOtp()
+      await pool.query("UPDATE users SET reset_otp_hash=$1, reset_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$2", [hashOtp(code), user.id])
+      await sendOtpEmail({ to: user.email, code, purpose: 'reset' })
+    }
+    response.json({ message: 'Jika email terdaftar, kode reset telah dikirim.' })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/password/reset', async (request, response, next) => {
+  try {
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const otp = String(request.body.otp || '')
+    const password = String(request.body.password || '')
+    const passwordConfirmation = String(request.body.password_confirmation || '')
+    const result = await pool.query('SELECT id, reset_otp_hash, reset_otp_expires_at FROM users WHERE email=$1 AND is_active=TRUE', [email])
+    const user = result.rows[0]
+    if (!user || !user.reset_otp_hash || new Date(user.reset_otp_expires_at) <= new Date() || !verifyOtp(otp, user.reset_otp_hash)) {
+      return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
+    }
+    if (password !== passwordConfirmation || password.length < 8) {
+      return response.status(400).json({ message: 'Password minimal 8 karakter dan konfirmasi harus sama.' })
+    }
+    await pool.query('UPDATE users SET password_hash=$1, reset_otp_hash=NULL, reset_otp_expires_at=NULL, updated_at=NOW() WHERE id=$2', [hashPassword(password), user.id])
+    response.json({ message: 'Password berhasil diperbarui. Silakan masuk.' })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/products', requireAuth, async (_request, response, next) => {
   try {
     const result = await pool.query(`SELECT ${productFields} FROM products ORDER BY created_at DESC`)
     response.json(result.rows.map(normalizeProduct))
@@ -103,36 +220,36 @@ app.delete('/api/products/:id', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.get('/api/users', async (_request, response, next) => {
+app.get('/api/users', requireAuth, async (_request, response, next) => {
   try {
     const result = await pool.query(`SELECT ${userFields} FROM users ORDER BY created_at DESC`)
     response.json(result.rows.map(normalizeUser))
   } catch (error) { next(error) }
 })
 
-app.post('/api/users', async (request, response, next) => {
+app.post('/api/users', requireAuth, async (request, response, next) => {
   try {
-    const { name, email, password, role = 'staff', isActive = true } = request.body
+    const { name, email, password, role = 'staff', isActive = true, mfaEnabled = false } = request.body
     if (!name || !email || !password) return response.status(400).json({ message: 'Name, email, and password are required' })
-    const result = await pool.query(`INSERT INTO users (name, email, password_hash, role, is_active) VALUES ($1,$2,$3,$4,$5) RETURNING ${userFields}`, [name, email.toLowerCase(), hashPassword(password), role, isActive])
+    const result = await pool.query(`INSERT INTO users (name, email, password_hash, role, is_active, mfa_enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING ${userFields}`, [name, email.toLowerCase(), hashPassword(password), role, isActive, mfaEnabled])
     response.status(201).json(normalizeUser(result.rows[0]))
   } catch (error) { next(error) }
 })
 
-app.put('/api/users/:id', async (request, response, next) => {
+app.put('/api/users/:id', requireAuth, async (request, response, next) => {
   try {
-    const { name, email, password, role = 'staff', isActive = true } = request.body
-    const values = [name, email.toLowerCase(), role, isActive]
-    const passwordPart = password ? ', password_hash=$5' : ''
+    const { name, email, password, role = 'staff', isActive = true, mfaEnabled = false } = request.body
+    const values = [name, email.toLowerCase(), role, isActive, mfaEnabled]
+    const passwordPart = password ? ', password_hash=$6' : ''
     if (password) values.push(hashPassword(password))
     values.push(request.params.id)
-    const result = await pool.query(`UPDATE users SET name=$1, email=$2, role=$3, is_active=$4${passwordPart}, updated_at=NOW() WHERE id=$${password ? 6 : 5} RETURNING ${userFields}`, values)
+    const result = await pool.query(`UPDATE users SET name=$1, email=$2, role=$3, is_active=$4, mfa_enabled=$5${passwordPart}, updated_at=NOW() WHERE id=$${password ? 7 : 6} RETURNING ${userFields}`, values)
     if (!result.rowCount) return response.status(404).json({ message: 'User not found' })
     response.json(normalizeUser(result.rows[0]))
   } catch (error) { next(error) }
 })
 
-app.delete('/api/users/:id', async (request, response, next) => {
+app.delete('/api/users/:id', requireAuth, async (request, response, next) => {
   try {
     const result = await pool.query('DELETE FROM users WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'User not found' })

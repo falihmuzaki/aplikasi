@@ -23,9 +23,20 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role VARCHAR(30) NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'staff')),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  login_otp_hash TEXT,
+  login_otp_expires_at TIMESTAMPTZ,
+  reset_otp_hash TEXT,
+  reset_otp_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_expires_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);
 CREATE INDEX IF NOT EXISTS users_active_idx ON users(is_active);
