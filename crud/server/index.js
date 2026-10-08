@@ -105,6 +105,19 @@ function requireAuth(request, response, next) {
   next()
 }
 
+// Approach (a): the token stays {uid, exp} and never carries the role, so the
+// client can't forge privilege. requireAdmin runs AFTER requireAuth (request.userId set)
+// and reads the authoritative role from the DB with a parameterized query. Any user that
+// isn't an active admin (including a missing/inactive row) gets 403.
+async function requireAdmin(request, response, next) {
+  try {
+    const result = await pool.query('SELECT role FROM users WHERE id=$1 AND is_active=TRUE', [request.userId])
+    const user = result.rows[0]
+    if (!user || user.role !== 'admin') return response.status(403).json({ message: 'Akses ditolak. Hanya admin yang diizinkan.' })
+    next()
+  } catch (error) { next(error) }
+}
+
 app.get('/api/health', async (_request, response) => {
   const result = await pool.query('SELECT NOW() AS now')
   response.json({ ok: true, databaseTime: result.rows[0].now })
@@ -220,14 +233,14 @@ app.delete('/api/products/:id', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.get('/api/users', requireAuth, async (_request, response, next) => {
+app.get('/api/users', requireAuth, requireAdmin, async (_request, response, next) => {
   try {
     const result = await pool.query(`SELECT ${userFields} FROM users ORDER BY created_at DESC`)
     response.json(result.rows.map(normalizeUser))
   } catch (error) { next(error) }
 })
 
-app.post('/api/users', requireAuth, async (request, response, next) => {
+app.post('/api/users', requireAuth, requireAdmin, async (request, response, next) => {
   try {
     const { name, email, password, role = 'staff', isActive = true, mfaEnabled = false } = request.body
     if (!name || !email || !password) return response.status(400).json({ message: 'Name, email, and password are required' })
@@ -236,7 +249,7 @@ app.post('/api/users', requireAuth, async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.put('/api/users/:id', requireAuth, async (request, response, next) => {
+app.put('/api/users/:id', requireAuth, requireAdmin, async (request, response, next) => {
   try {
     const { name, email, password, role = 'staff', isActive = true, mfaEnabled = false } = request.body
     const values = [name, email.toLowerCase(), role, isActive, mfaEnabled]
@@ -249,7 +262,7 @@ app.put('/api/users/:id', requireAuth, async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.delete('/api/users/:id', requireAuth, async (request, response, next) => {
+app.delete('/api/users/:id', requireAuth, requireAdmin, async (request, response, next) => {
   try {
     const result = await pool.query('DELETE FROM users WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'User not found' })

@@ -59,3 +59,17 @@ Ada dua mode, tergantung konfigurasi `MAIL_*` di `.env`:
 Untuk Gmail, isi `MAIL_USERNAME`/`MAIL_PASSWORD` dengan App Password (bukan password akun biasa).
 
 Token login dikirim frontend sebagai header `Authorization: Bearer <token>`. Endpoint `GET /api/products`, `GET /api/users`, dan seluruh perubahan `/api/users` membutuhkan token tersebut.
+
+## Hak akses (privilege)
+
+Model privilege bawaan berbasis kolom `role` pada tabel `users` (`admin` atau `staff`):
+
+- **Admin**: dapat mengelola **users** (lihat/tambah/edit/hapus) sekaligus **products**.
+- **Staff**: hanya dapat mengakses **products**. Staff **tidak bisa** membuka manajemen users.
+
+Penegakan di dua lapis:
+
+- **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`.
+- **Frontend**: menu dan tampilan **Users** disembunyikan untuk staff, dan aplikasi tidak memanggil `GET /api/users` untuk staff. Staff diarahkan ke tampilan products secara default.
+
+Route products tidak berubah: admin dan staff sama-sama dapat melihat dan mengubah products.
