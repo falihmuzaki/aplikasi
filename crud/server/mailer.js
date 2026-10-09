@@ -25,7 +25,7 @@ function readMailConfig() {
   const port = Number(process.env.MAIL_PORT || 587)
   const encryption = String(process.env.MAIL_ENCRYPTION || '').trim().toLowerCase()
   const fromAddress = String(process.env.MAIL_FROM_ADDRESS || username).trim()
-  const fromName = String(process.env.MAIL_FROM_NAME || 'Lumina').trim()
+  const fromName = String(process.env.MAIL_FROM_NAME || 'Ifal Store').trim()
   // secure=true untuk SMTPS (port 465 / MAIL_ENCRYPTION=ssl); selain itu
   // secure=false dan nodemailer memakai STARTTLS (umumnya port 587/tls).
   const secure = port === 465 || encryption === 'ssl'
@@ -55,9 +55,9 @@ function getTransporter(config) {
 function buildMessage({ code, purpose }) {
   const isReset = purpose === 'reset'
   const intro = isReset
-    ? 'Berikut kode OTP untuk mereset password akun Lumina Anda.'
-    : 'Berikut kode OTP untuk menyelesaikan proses masuk ke akun Lumina Anda.'
-  const subject = 'Kode OTP Lumina'
+    ? 'Berikut kode OTP untuk mereset password akun Ifal Store Anda.'
+    : 'Berikut kode OTP untuk menyelesaikan proses masuk ke akun Ifal Store Anda.'
+  const subject = 'Kode OTP Ifal Store'
   const text = [
     intro,
     '',
@@ -66,14 +66,14 @@ function buildMessage({ code, purpose }) {
     'Kode berlaku selama 10 menit dan hanya bisa dipakai sekali.',
     'Abaikan email ini jika Anda tidak meminta kode tersebut.',
     '',
-    '— Lumina',
+    '— Ifal Store',
   ].join('\n')
   const html = [
     `<p>${intro}</p>`,
     `<p style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>`,
     '<p>Kode berlaku selama 10 menit dan hanya bisa dipakai sekali.</p>',
     '<p>Abaikan email ini jika Anda tidak meminta kode tersebut.</p>',
-    '<p style="color:#888">— Lumina</p>',
+    '<p style="color:#888">— Ifal Store</p>',
   ].join('')
   return { subject, text, html }
 }
