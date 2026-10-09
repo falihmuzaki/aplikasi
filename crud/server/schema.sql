@@ -40,3 +40,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_expires_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);
 CREATE INDEX IF NOT EXISTS users_active_idx ON users(is_active);
+
+CREATE TABLE IF NOT EXISTS categories (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(80) NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS categories_name_idx ON categories(name);
+
+-- Seed kategori bawaan (idempotent). Juga serap kategori yang sudah terpakai di products.
+INSERT INTO categories (name)
+VALUES ('Electronics'), ('Home & Living'), ('Accessories'), ('Fashion')
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO categories (name)
+SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category <> ''
+ON CONFLICT (name) DO NOTHING;

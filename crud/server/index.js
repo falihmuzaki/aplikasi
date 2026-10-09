@@ -72,6 +72,11 @@ const otpSendLimiter = createRateLimiter({
 
 const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, created_at, updated_at'
 const userFields = 'id, name, email, role, is_active, mfa_enabled, created_at, updated_at'
+const categoryFields = 'id, name, created_at, updated_at'
+
+function normalizeCategory(row) {
+  return { id: Number(row.id), name: row.name, createdAt: row.created_at, updatedAt: row.updated_at }
+}
 
 function normalizeProduct(row) {
   return {
@@ -318,6 +323,79 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, async (request, response
   try {
     const result = await pool.query('DELETE FROM users WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'User not found' })
+    response.status(204).end()
+  } catch (error) { next(error) }
+})
+
+// --- Categories: read for any authenticated user, writes restricted to admins. ---
+// Each category row carries a live product usage count so the UI can show it and so
+// deletes can be refused while a category is still referenced by products.
+
+app.get('/api/categories', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.id, c.name, c.created_at, c.updated_at,
+             COUNT(p.id)::int AS product_count
+      FROM categories c
+      LEFT JOIN products p ON p.category = c.name
+      GROUP BY c.id
+      ORDER BY c.name ASC
+    `)
+    response.json(result.rows.map((row) => ({ ...normalizeCategory(row), productCount: row.product_count })))
+  } catch (error) { next(error) }
+})
+
+app.post('/api/categories', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const name = String(request.body.name || '').trim()
+    if (!name) return response.status(400).json({ message: 'Nama kategori wajib diisi.' })
+    const result = await pool.query(`INSERT INTO categories (name) VALUES ($1) RETURNING ${categoryFields}`, [name])
+    response.status(201).json({ ...normalizeCategory(result.rows[0]), productCount: 0 })
+  } catch (error) {
+    if (error.code === '23505') return response.status(409).json({ message: 'Kategori dengan nama itu sudah ada.' })
+    next(error)
+  }
+})
+
+app.put('/api/categories/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  const client = await pool.connect()
+  try {
+    const name = String(request.body.name || '').trim()
+    if (!name) return response.status(400).json({ message: 'Nama kategori wajib diisi.' })
+    await client.query('BEGIN')
+    const existing = await client.query('SELECT name FROM categories WHERE id=$1 FOR UPDATE', [request.params.id])
+    if (!existing.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Kategori tidak ditemukan.' })
+    }
+    const oldName = existing.rows[0].name
+    const result = await client.query(`UPDATE categories SET name=$1, updated_at=NOW() WHERE id=$2 RETURNING ${categoryFields}`, [name, request.params.id])
+    // Keep product rows (which store category as text) in sync when a category is renamed.
+    let affected = 0
+    if (oldName !== name) {
+      const sync = await client.query('UPDATE products SET category=$1, updated_at=NOW() WHERE category=$2', [name, oldName])
+      affected = sync.rowCount
+    }
+    await client.query('COMMIT')
+    response.json({ ...normalizeCategory(result.rows[0]), productCount: affected || 0, renamedProducts: affected })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    if (error.code === '23505') return response.status(409).json({ message: 'Kategori dengan nama itu sudah ada.' })
+    next(error)
+  } finally {
+    client.release()
+  }
+})
+
+app.delete('/api/categories/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const found = await pool.query('SELECT name FROM categories WHERE id=$1', [request.params.id])
+    if (!found.rowCount) return response.status(404).json({ message: 'Kategori tidak ditemukan.' })
+    const used = await pool.query('SELECT COUNT(*)::int AS count FROM products WHERE category=$1', [found.rows[0].name])
+    if (used.rows[0].count > 0) {
+      return response.status(409).json({ message: `Kategori masih dipakai ${used.rows[0].count} produk. Pindahkan produk tersebut lebih dulu.` })
+    }
+    await pool.query('DELETE FROM categories WHERE id=$1', [request.params.id])
     response.status(204).end()
   } catch (error) { next(error) }
 })
