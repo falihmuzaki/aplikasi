@@ -208,7 +208,7 @@ app.get('/api/products', requireAuth, async (_request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.post('/api/products', async (request, response, next) => {
+app.post('/api/products', requireAuth, async (request, response, next) => {
   try {
     const values = productValues(request.body)
     const result = await pool.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ${productFields}`, values)
@@ -216,7 +216,7 @@ app.post('/api/products', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.put('/api/products/:id', async (request, response, next) => {
+app.put('/api/products/:id', requireAuth, async (request, response, next) => {
   try {
     const values = productValues(request.body)
     const result = await pool.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, updated_at=NOW() WHERE id=$9 RETURNING ${productFields}`, [...values, request.params.id])
@@ -225,7 +225,7 @@ app.put('/api/products/:id', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.delete('/api/products/:id', async (request, response, next) => {
+app.delete('/api/products/:id', requireAuth, async (request, response, next) => {
   try {
     const result = await pool.query('DELETE FROM products WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
