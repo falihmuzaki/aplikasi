@@ -20,6 +20,56 @@ app.use(express.json({ limit: '8mb' }))
 const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || 'lumina-dev-token-secret-change-me'
 const TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
+// In-memory sliding-window rate limiter. No external dependency, consistent with the
+// rest of this server. State lives in a single process; for multi-instance deploys this
+// should move to a shared store (e.g. Redis). Each limiter keeps timestamps per key and
+// drops any older than windowMs before counting.
+function createRateLimiter({ windowMs, max, message }) {
+  const hits = new Map()
+  // Periodically evict stale keys so the map doesn't grow unbounded.
+  const sweep = setInterval(() => {
+    const cutoff = Date.now() - windowMs
+    for (const [key, timestamps] of hits) {
+      const fresh = timestamps.filter((time) => time > cutoff)
+      if (fresh.length) hits.set(key, fresh)
+      else hits.delete(key)
+    }
+  }, windowMs)
+  sweep.unref?.()
+
+  const middleware = (request, response, next) => {
+    const ip = request.ip || request.socket?.remoteAddress || 'unknown'
+    const email = String(request.body?.email || '').trim().toLowerCase()
+    const key = `${ip}|${email}`
+    const now = Date.now()
+    const timestamps = (hits.get(key) || []).filter((time) => time > now - windowMs)
+    if (timestamps.length >= max) {
+      const retryAfterSec = Math.ceil((timestamps[0] + windowMs - now) / 1000)
+      response.setHeader('Retry-After', String(retryAfterSec))
+      return response.status(429).json({ message })
+    }
+    timestamps.push(now)
+    hits.set(key, timestamps)
+    // Expose a reset so a successful auth can clear the counter for this key.
+    request.clearRateLimit = () => hits.delete(key)
+    next()
+  }
+  return middleware
+}
+
+// Login/OTP verification: strict, protects against password and OTP brute force.
+const loginLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Terlalu banyak percobaan. Coba lagi dalam beberapa menit.',
+})
+// OTP/email dispatch (resend, forgot, reset): protects against email flooding.
+const otpSendLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: 'Terlalu banyak permintaan kode. Coba lagi nanti.',
+})
+
 const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, created_at, updated_at'
 const userFields = 'id, name, email, role, is_active, mfa_enabled, created_at, updated_at'
 
@@ -123,13 +173,14 @@ app.get('/api/health', async (_request, response) => {
   response.json({ ok: true, databaseTime: result.rows[0].now })
 })
 
-app.post('/api/auth/login', async (request, response, next) => {
+app.post('/api/auth/login', loginLimiter, async (request, response, next) => {
   try {
     const email = String(request.body.email || '').trim().toLowerCase()
     const password = String(request.body.password || '')
     const result = await pool.query(`SELECT ${userFields}, password_hash FROM users WHERE email=$1 AND is_active=TRUE`, [email])
     const user = result.rows[0]
     if (!user || !verifyPassword(password, user.password_hash)) return response.status(401).json({ message: 'Email atau password tidak sesuai.' })
+    request.clearRateLimit?.()
     if (user.mfa_enabled) {
       const code = generateOtp()
       await pool.query("UPDATE users SET login_otp_hash=$1, login_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$2", [hashOtp(code), user.id])
@@ -140,7 +191,7 @@ app.post('/api/auth/login', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.post('/api/auth/otp/verify', async (request, response, next) => {
+app.post('/api/auth/otp/verify', loginLimiter, async (request, response, next) => {
   try {
     const email = String(request.body.email || '').trim().toLowerCase()
     const otp = String(request.body.otp || '')
@@ -149,12 +200,13 @@ app.post('/api/auth/otp/verify', async (request, response, next) => {
     if (!user || !user.login_otp_hash || new Date(user.login_otp_expires_at) <= new Date() || !verifyOtp(otp, user.login_otp_hash)) {
       return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
     }
+    request.clearRateLimit?.()
     await pool.query('UPDATE users SET login_otp_hash=NULL, login_otp_expires_at=NULL, updated_at=NOW() WHERE id=$1', [user.id])
     response.json({ user: normalizeUser(user), token: signToken(user.id) })
   } catch (error) { next(error) }
 })
 
-app.post('/api/auth/otp/resend', async (request, response, next) => {
+app.post('/api/auth/otp/resend', otpSendLimiter, async (request, response, next) => {
   try {
     const email = String(request.body.email || '').trim().toLowerCase()
     const result = await pool.query('SELECT id, email FROM users WHERE email=$1 AND is_active=TRUE', [email])
@@ -168,7 +220,7 @@ app.post('/api/auth/otp/resend', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.post('/api/auth/password/forgot', async (request, response, next) => {
+app.post('/api/auth/password/forgot', otpSendLimiter, async (request, response, next) => {
   try {
     const email = String(request.body.email || '').trim().toLowerCase()
     const result = await pool.query('SELECT id, email FROM users WHERE email=$1 AND is_active=TRUE', [email])
@@ -182,7 +234,7 @@ app.post('/api/auth/password/forgot', async (request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.post('/api/auth/password/reset', async (request, response, next) => {
+app.post('/api/auth/password/reset', loginLimiter, async (request, response, next) => {
   try {
     const email = String(request.body.email || '').trim().toLowerCase()
     const otp = String(request.body.otp || '')
