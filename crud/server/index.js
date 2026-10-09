@@ -322,6 +322,48 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, async (request, response
   } catch (error) { next(error) }
 })
 
+// --- Self-service profile (any authenticated user manages their own account) ---
+
+app.get('/api/auth/me', requireAuth, async (request, response, next) => {
+  try {
+    const result = await pool.query(`SELECT ${userFields} FROM users WHERE id=$1 AND is_active=TRUE`, [request.userId])
+    const user = result.rows[0]
+    if (!user) return response.status(404).json({ message: 'Akun tidak ditemukan.' })
+    response.json(normalizeUser(user))
+  } catch (error) { next(error) }
+})
+
+app.put('/api/auth/profile', requireAuth, async (request, response, next) => {
+  try {
+    const name = String(request.body.name || '').trim()
+    const email = String(request.body.email || '').trim().toLowerCase()
+    if (!name || !email) return response.status(400).json({ message: 'Nama dan email wajib diisi.' })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return response.status(400).json({ message: 'Format email tidak valid.' })
+    const result = await pool.query(`UPDATE users SET name=$1, email=$2, updated_at=NOW() WHERE id=$3 RETURNING ${userFields}`, [name, email, request.userId])
+    if (!result.rowCount) return response.status(404).json({ message: 'Akun tidak ditemukan.' })
+    response.json(normalizeUser(result.rows[0]))
+  } catch (error) {
+    if (error.code === '23505') return response.status(409).json({ message: 'Email sudah digunakan akun lain.' })
+    next(error)
+  }
+})
+
+app.post('/api/auth/password/change', requireAuth, async (request, response, next) => {
+  try {
+    const currentPassword = String(request.body.currentPassword || '')
+    const newPassword = String(request.body.newPassword || '')
+    const confirmation = String(request.body.newPasswordConfirmation || '')
+    if (newPassword.length < 8) return response.status(400).json({ message: 'Password baru minimal 8 karakter.' })
+    if (newPassword !== confirmation) return response.status(400).json({ message: 'Konfirmasi password tidak sama.' })
+    const result = await pool.query('SELECT password_hash FROM users WHERE id=$1 AND is_active=TRUE', [request.userId])
+    const user = result.rows[0]
+    if (!user) return response.status(404).json({ message: 'Akun tidak ditemukan.' })
+    if (!verifyPassword(currentPassword, user.password_hash)) return response.status(400).json({ message: 'Password saat ini tidak sesuai.' })
+    await pool.query('UPDATE users SET password_hash=$1, updated_at=NOW() WHERE id=$2', [hashPassword(newPassword), request.userId])
+    response.json({ message: 'Password berhasil diperbarui.' })
+  } catch (error) { next(error) }
+})
+
 app.use((error, _request, response, _next) => {
   console.error(error)
   response.status(500).json({ message: 'Database request failed' })
