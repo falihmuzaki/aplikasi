@@ -71,7 +71,7 @@ const otpSendLimiter = createRateLimiter({
 })
 
 const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, created_at, updated_at'
-const userFields = 'id, name, email, role, is_active, mfa_enabled, created_at, updated_at'
+const userFields = 'id, name, email, role, is_active, mfa_enabled, avatar_url, created_at, updated_at'
 const categoryFields = 'id, name, created_at, updated_at'
 
 function normalizeCategory(row) {
@@ -111,7 +111,7 @@ function verifyPassword(password, storedHash) {
 }
 
 function normalizeUser(row) {
-  return { id: Number(row.id), name: row.name, email: row.email, role: row.role, isActive: row.is_active, mfaEnabled: row.mfa_enabled, createdAt: row.created_at, updatedAt: row.updated_at }
+  return { id: Number(row.id), name: row.name, email: row.email, role: row.role, isActive: row.is_active, mfaEnabled: row.mfa_enabled, avatarUrl: row.avatar_url || null, createdAt: row.created_at, updatedAt: row.updated_at }
 }
 
 function signToken(uid) {
@@ -417,7 +417,17 @@ app.put('/api/auth/profile', requireAuth, async (request, response, next) => {
     const email = String(request.body.email || '').trim().toLowerCase()
     if (!name || !email) return response.status(400).json({ message: 'Nama dan email wajib diisi.' })
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return response.status(400).json({ message: 'Format email tidak valid.' })
-    const result = await pool.query(`UPDATE users SET name=$1, email=$2, updated_at=NOW() WHERE id=$3 RETURNING ${userFields}`, [name, email, request.userId])
+    // Avatar is optional. Only touch the column when the client sent the key, so a plain
+    // name/email save doesn't wipe an existing photo. A data URL sets it; null clears it.
+    const hasAvatar = Object.prototype.hasOwnProperty.call(request.body, 'avatarUrl')
+    const avatarUrl = request.body.avatarUrl ? String(request.body.avatarUrl) : null
+    if (hasAvatar && avatarUrl && !/^data:image\/(png|jpe?g|webp|gif);base64,/.test(avatarUrl)) {
+      return response.status(400).json({ message: 'Format gambar tidak didukung.' })
+    }
+    const query = hasAvatar
+      ? { text: `UPDATE users SET name=$1, email=$2, avatar_url=$3, updated_at=NOW() WHERE id=$4 RETURNING ${userFields}`, values: [name, email, avatarUrl, request.userId] }
+      : { text: `UPDATE users SET name=$1, email=$2, updated_at=NOW() WHERE id=$3 RETURNING ${userFields}`, values: [name, email, request.userId] }
+    const result = await pool.query(query.text, query.values)
     if (!result.rowCount) return response.status(404).json({ message: 'Akun tidak ditemukan.' })
     response.json(normalizeUser(result.rows[0]))
   } catch (error) {
