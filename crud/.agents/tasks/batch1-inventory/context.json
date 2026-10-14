@@ -1,0 +1,26 @@
+{
+  "project_type": "React 19 + Vite SPA (src/App.jsx single-file dense app) with an Express 5 + PostgreSQL (pg Pool) JSON API in server/. ESM everywhere (\"type\": \"module\").",
+  "language": "JavaScript (ESM, JSX)",
+  "build_system": "Vite 8 for the client; plain Node for the server. QUIRK: on Windows/PowerShell the `npm` shim is blocked by execution policy — always invoke `npm.cmd`. Project root for all commands is c:\\Users\\Falih\\Videos\\aplikasi\\.worktrees\\batch1-inventory\\crud.",
+  "test_framework": "NONE. There is no test runner configured. Verification is build + lint + `node --check` on server files, plus an optional DB smoke test. Do not invent a test framework for Batch 1.",
+  "build_command": "npm.cmd run build  (vite build)",
+  "test_command": "npm.cmd run lint  (oxlint)  — plus  node --check server/index.js  for the server; there is no unit-test command.",
+  "verification_instructions": "From crud/: (1) npm.cmd install. (2) npm.cmd run build must succeed with no errors. (3) npm.cmd run lint must pass with no NEW errors (oxlint config enables react/rules-of-hooks=error, react/only-export-components=warn). (4) node --check server/index.js (and any other new .js server file) must pass. (5) DB smoke test ONLY IF a .env with a reachable DATABASE_URL exists — currently only .env.example is present, so this step is expected to be SKIPPED; note that in findings rather than failing.",
+  "snapshot_or_generated_files": "null — no generated/checked-in build artifacts. node_modules is NOT present initially; run npm.cmd install first.",
+  "environment_constraints": "Windows/PowerShell. Use npm.cmd, never bare npm. All paths are absolute inside the worktree; relative paths resolve against the parent workspace, not the worktree — always use the absolute worktree paths given. Do NOT push; commit locally only. Do NOT start long-running dev servers (vite/node server) as part of verification.",
+  "contribution_requirements": "No AGENTS.md / CONTRIBUTING / .kiro steering files exist. Conventions are inferred from the code: zero extra runtime dependencies are added by hand (hand-rolled rate limiter, HMAC token signer in server/index.js) — follow this by hand-writing the Code128 barcode generator instead of adding a dependency. Keep the terse one-liner style of App.jsx and the Express route style of index.js.",
+  "key_patterns": "Backend: pg Pool via DATABASE_URL; schema.sql applied at boot (idempotent CREATE TABLE IF NOT EXISTS / ALTER TABLE ADD COLUMN IF NOT EXISTS). Helpers productFields (column-list string), normalizeProduct(row) -> camelCase JSON, productValues(body) -> positional insert/update values. Middleware requireAuth sets request.userId (uid only, NOT name/role); requireAdmin reads role from DB. Transaction pattern = pool.connect() + BEGIN/COMMIT/ROLLBACK with try/catch/finally client.release(), exactly as in the categories PUT route. Errors flow via next(error) to a single error handler returning 500. Unique-violation = error.code === '23505'. Frontend: fetch(`${API_URL}/...`, { headers: authHeaders() }), API_URL='http://localhost:3001/api', authHeaders() adds Bearer token from localStorage('lumina-token'). State in a single App() component with activeView sidebar nav ('products' | 'categories' | 'users' | 'profile'); admin-only views gated by isAdmin (currentUser.role==='admin'). pushToast(type,message) for notifications. formatIDR for currency. lucide-react icons. CSV export via exportCsv (currently header Name,Category,Price,Stock,Status). The app has a local-mode fallback (seedProducts) when the API is offline.",
+  "relevant_files": [
+    "server/index.js  (MODIFY: productFields, normalizeProduct, productValues, product routes; ADD sku gen, soft-delete/archive/restore/permanent, stock-movements transaction + read routes, bulk import)",
+    "server/schema.sql  (MODIFY: ADD COLUMN sku + deleted_at, partial unique sku index, deleted_at index, stock_movements table + index)",
+    "server/create-admin.js  (STUDY: shows the users insert and scrypt hashing; do not modify)",
+    "src/App.jsx  (MODIFY: product form/table SKU + barcode + per-product history, Archive view, Stock log view, CSV import+preview, extend exportCsv, low-stock bell; add nav items)",
+    "src/App.css  (MODIFY: reuse .catalog-panel/.primary-button/.secondary-button/.danger-button/.modal/.status/.role-badge/.toolbar/.table-wrap/.nav-item/.nav-count; add minimal new classes for barcode, bell/badge, import preview in the same style)",
+    "src/barcode.js  (CREATE: self-contained Code128-B SVG generator, no dependency)",
+    "package.json  (STUDY: scripts dev/server/build/lint; deps)",
+    ".oxlintrc.json  (STUDY: lint rules)",
+    ".env.example  (STUDY: DATABASE_URL shape; a real .env is NOT present)",
+    "README.md  (STUDY: run/privilege model)"
+  ],
+  "directory_structure": "crud/ root holds package.json, vite.config.js, .oxlintrc.json, index.html, .env.example (no .env), README.md. crud/server/ = Express API (index.js, schema.sql, create-admin.js, mailer.js). crud/src/ = React client (App.jsx dense single-file UI, App.css styles, main.jsx entry). crud/public/ = static assets. crud/.agents/tasks/batch1-inventory/ = planning + review artifacts (this folder)."
+}

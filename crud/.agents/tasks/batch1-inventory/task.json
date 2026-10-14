@@ -1,0 +1,7 @@
+{
+  "task_id": "task-batch1-inventory",
+  "task_description": "Implement Batch 1 inventory-management features into the existing React + Vite + Express + PostgreSQL app: (1) SKU/barcode per product with a self-contained Code128-B SVG generator, (2) stock audit log via a stock_movements table with transactional writes and read routes + UI, (3) soft delete + archive/restore (+ admin permanent delete), (4) client-side CSV bulk import with preview backed by a transactional POST /api/products/bulk and SKU-extended export, (5) in-app low-stock notification bell. Backend first (shared foundation), then frontend. Schema changes idempotent; API response shapes preserved (only additive); parameterized SQL only; no e-commerce features; no email.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
