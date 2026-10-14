@@ -70,7 +70,7 @@ const otpSendLimiter = createRateLimiter({
   message: 'Terlalu banyak permintaan kode. Coba lagi nanti.',
 })
 
-const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, created_at, updated_at'
+const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, sku, deleted_at, created_at, updated_at'
 const userFields = 'id, name, email, role, is_active, mfa_enabled, avatar_url, created_at, updated_at'
 const categoryFields = 'id, name, created_at, updated_at'
 
@@ -87,6 +87,7 @@ function normalizeProduct(row) {
     stock: row.stock,
     status: row.status,
     media: row.media_url ? { name: row.media_name, type: row.media_type, url: row.media_url } : null,
+    sku: row.sku ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -95,6 +96,14 @@ function normalizeProduct(row) {
 function productValues(body) {
   const stock = Number(body.stock) || 0
   return [body.name, body.category, Number(body.price) || 0, stock, stock === 0 ? 'Out of stock' : body.status || 'Active', body.media?.name || null, body.media?.type || null, body.media?.url || null]
+}
+
+function generateSku() {
+  return 'SKU-' + Date.now().toString(36).toUpperCase() + '-' + crypto.randomBytes(2).toString('hex').toUpperCase()
+}
+
+function normalizeMovement(row) {
+  return { id: Number(row.id), productId: row.product_id === null ? null : Number(row.product_id), userId: row.user_id === null ? null : Number(row.user_id), userName: row.user_name ?? null, delta: row.delta, stockBefore: row.stock_before, stockAfter: row.stock_after, reason: row.reason ?? null, createdAt: row.created_at }
 }
 
 function hashPassword(password) {
@@ -260,34 +269,173 @@ app.post('/api/auth/password/reset', loginLimiter, async (request, response, nex
 
 app.get('/api/products', requireAuth, async (_request, response, next) => {
   try {
-    const result = await pool.query(`SELECT ${productFields} FROM products ORDER BY created_at DESC`)
+    const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL ORDER BY created_at DESC`)
+    response.json(result.rows.map(normalizeProduct))
+  } catch (error) { next(error) }
+})
+
+app.get('/api/products/archived', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`)
     response.json(result.rows.map(normalizeProduct))
   } catch (error) { next(error) }
 })
 
 app.post('/api/products', requireAuth, async (request, response, next) => {
+  const client = await pool.connect()
   try {
+    await client.query('BEGIN')
     const values = productValues(request.body)
-    const result = await pool.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ${productFields}`, values)
-    response.status(201).json(normalizeProduct(result.rows[0]))
-  } catch (error) { next(error) }
+    const stock = values[3]
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const userName = userResult.rows[0]?.name ?? null
+    const provided = String(request.body.sku || '').trim()
+    // Insert the product; on a generated-SKU collision (23505 on products_sku_idx) retry
+    // with a fresh SKU a few times before surfacing the error.
+    let row
+    let attempts = provided ? 1 : 5
+    while (attempts > 0) {
+      const sku = provided || generateSku()
+      try {
+        const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${productFields}`, [...values, sku])
+        row = result.rows[0]
+        break
+      } catch (error) {
+        attempts -= 1
+        if (provided || error.code !== '23505' || attempts === 0) throw error
+      }
+    }
+    if (stock > 0) {
+      const reason = String(request.body.reason || '').trim() || 'Initial stock'
+      await client.query('INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)', [row.id, request.userId, userName, stock, 0, stock, reason])
+    }
+    await client.query('COMMIT')
+    response.status(201).json(normalizeProduct(row))
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally {
+    client.release()
+  }
 })
 
 app.put('/api/products/:id', requireAuth, async (request, response, next) => {
+  const client = await pool.connect()
   try {
+    await client.query('BEGIN')
+    const existing = await client.query('SELECT stock, sku FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [request.params.id])
+    if (!existing.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Product not found' })
+    }
+    const oldStock = existing.rows[0].stock
     const values = productValues(request.body)
-    const result = await pool.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, updated_at=NOW() WHERE id=$9 RETURNING ${productFields}`, [...values, request.params.id])
+    const newStock = values[3]
+    const provided = String(request.body.sku || '').trim()
+    const sku = provided || existing.rows[0].sku
+    const result = await client.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, sku=$9, updated_at=NOW() WHERE id=$10 RETURNING ${productFields}`, [...values, sku, request.params.id])
+    if (newStock !== oldStock) {
+      const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+      const userName = userResult.rows[0]?.name ?? null
+      const reason = String(request.body.reason || '').trim() || 'Manual update'
+      await client.query('INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)', [request.params.id, request.userId, userName, newStock - oldStock, oldStock, newStock, reason])
+    }
+    await client.query('COMMIT')
+    response.json(normalizeProduct(result.rows[0]))
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally {
+    client.release()
+  }
+})
+
+app.delete('/api/products/:id', requireAuth, async (request, response, next) => {
+  try {
+    const result = await pool.query('UPDATE products SET deleted_at=NOW(), updated_at=NOW() WHERE id=$1 AND deleted_at IS NULL', [request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
+    response.status(204).end()
+  } catch (error) { next(error) }
+})
+
+app.post('/api/products/:id/restore', requireAuth, async (request, response, next) => {
+  try {
+    const result = await pool.query(`UPDATE products SET deleted_at=NULL, updated_at=NOW() WHERE id=$1 AND deleted_at IS NOT NULL RETURNING ${productFields}`, [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
     response.json(normalizeProduct(result.rows[0]))
   } catch (error) { next(error) }
 })
 
-app.delete('/api/products/:id', requireAuth, async (request, response, next) => {
+app.delete('/api/products/:id/permanent', requireAuth, requireAdmin, async (request, response, next) => {
   try {
     const result = await pool.query('DELETE FROM products WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
     response.status(204).end()
   } catch (error) { next(error) }
+})
+
+app.get('/api/products/:id/movements', requireAuth, async (request, response, next) => {
+  try {
+    const result = await pool.query('SELECT id, product_id, user_id, user_name, delta, stock_before, stock_after, reason, created_at FROM stock_movements WHERE product_id=$1 ORDER BY created_at DESC', [request.params.id])
+    response.json(result.rows.map(normalizeMovement))
+  } catch (error) { next(error) }
+})
+
+app.get('/api/stock-movements', requireAuth, requireAdmin, async (_request, response, next) => {
+  try {
+    const result = await pool.query('SELECT m.id, m.product_id, m.user_id, m.user_name, m.delta, m.stock_before, m.stock_after, m.reason, m.created_at, p.name AS product_name FROM stock_movements m LEFT JOIN products p ON p.id=m.product_id ORDER BY m.created_at DESC LIMIT 200')
+    response.json(result.rows.map((row) => ({ ...normalizeMovement(row), productName: row.product_name ?? null })))
+  } catch (error) { next(error) }
+})
+
+app.post('/api/products/bulk', requireAuth, async (request, response) => {
+  const products = request.body?.products
+  if (!Array.isArray(products) || products.length === 0) return response.status(400).json({ message: 'A non-empty products array is required.' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const userName = userResult.rows[0]?.name ?? null
+    const rows = []
+    for (let index = 0; index < products.length; index += 1) {
+      const body = products[index]
+      try {
+        const values = productValues(body)
+        const stock = values[3]
+        const provided = String(body.sku || '').trim()
+        let row
+        let attempts = provided ? 1 : 5
+        while (attempts > 0) {
+          const sku = provided || generateSku()
+          try {
+            const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${productFields}`, [...values, sku])
+            row = result.rows[0]
+            break
+          } catch (error) {
+            attempts -= 1
+            if (provided || error.code !== '23505' || attempts === 0) throw error
+          }
+        }
+        if (stock > 0) {
+          const reason = String(body.reason || '').trim() || 'Initial stock'
+          await client.query('INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)', [row.id, request.userId, userName, stock, 0, stock, reason])
+        }
+        rows.push(row)
+      } catch (error) {
+        error.rowIndex = index
+        throw error
+      }
+    }
+    await client.query('COMMIT')
+    response.json({ created: rows.map(normalizeProduct) })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    const index = typeof error.rowIndex === 'number' ? error.rowIndex : null
+    const message = error.code === '23505' ? 'Duplicate SKU in import.' : (error.message || 'Bulk import failed.')
+    response.status(400).json({ message, index })
+  } finally {
+    client.release()
+  }
 })
 
 app.get('/api/users', requireAuth, requireAdmin, async (_request, response, next) => {

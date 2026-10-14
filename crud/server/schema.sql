@@ -16,6 +16,25 @@ CREATE INDEX IF NOT EXISTS products_category_idx ON products(category);
 CREATE INDEX IF NOT EXISTS products_status_idx ON products(status);
 CREATE INDEX IF NOT EXISTS products_created_at_idx ON products(created_at DESC);
 
+ALTER TABLE products ADD COLUMN IF NOT EXISTS sku VARCHAR(64);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS products_sku_idx ON products(sku) WHERE sku IS NOT NULL;
+CREATE INDEX IF NOT EXISTS products_deleted_at_idx ON products(deleted_at);
+
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT REFERENCES products(id) ON DELETE CASCADE,
+  user_id BIGINT,
+  user_name VARCHAR(120),
+  delta INTEGER NOT NULL,
+  stock_before INTEGER NOT NULL,
+  stock_after INTEGER NOT NULL,
+  reason VARCHAR(255),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS stock_movements_product_idx ON stock_movements(product_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS users (
   id BIGSERIAL PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
