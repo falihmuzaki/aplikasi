@@ -23,7 +23,7 @@ export function code128BarcodeSvg(value, { height = 48, moduleWidth = 2 } = {}) 
   const codes = []
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i) - 32
-    if (code >= 0 && code <= 94) codes.push(code)
+    if (code >= 0 && code <= 95) codes.push(code)
   }
   const START_B = 104
   const STOP = 106

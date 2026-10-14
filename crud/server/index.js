@@ -296,11 +296,16 @@ app.post('/api/products', requireAuth, async (request, response, next) => {
     let attempts = provided ? 1 : 5
     while (attempts > 0) {
       const sku = provided || generateSku()
+      // A failed INSERT aborts the whole transaction, so each attempt runs inside a
+      // SAVEPOINT and rolls back to it on a 23505 collision before the next retry.
+      await client.query('SAVEPOINT sku_attempt')
       try {
         const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${productFields}`, [...values, sku])
         row = result.rows[0]
+        await client.query('RELEASE SAVEPOINT sku_attempt')
         break
       } catch (error) {
+        await client.query('ROLLBACK TO SAVEPOINT sku_attempt')
         attempts -= 1
         if (provided || error.code !== '23505' || attempts === 0) throw error
       }
@@ -407,11 +412,16 @@ app.post('/api/products/bulk', requireAuth, async (request, response) => {
         let attempts = provided ? 1 : 5
         while (attempts > 0) {
           const sku = provided || generateSku()
+          // SAVEPOINT per attempt so a 23505 collision doesn't abort the whole bulk
+          // transaction; roll back to it before retrying with a fresh SKU.
+          await client.query('SAVEPOINT sku_attempt')
           try {
             const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${productFields}`, [...values, sku])
             row = result.rows[0]
+            await client.query('RELEASE SAVEPOINT sku_attempt')
             break
           } catch (error) {
+            await client.query('ROLLBACK TO SAVEPOINT sku_attempt')
             attempts -= 1
             if (provided || error.code !== '23505' || attempts === 0) throw error
           }
