@@ -70,7 +70,7 @@ const otpSendLimiter = createRateLimiter({
   message: 'Terlalu banyak permintaan kode. Coba lagi nanti.',
 })
 
-const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, sku, deleted_at, created_at, updated_at'
+const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, deleted_at, created_at, updated_at'
 const userFields = 'id, name, email, role, is_active, mfa_enabled, avatar_url, created_at, updated_at'
 const categoryFields = 'id, name, created_at, updated_at'
 
@@ -88,6 +88,7 @@ function normalizeProduct(row) {
     status: row.status,
     media: row.media_url ? { name: row.media_name, type: row.media_type, url: row.media_url } : null,
     sku: row.sku ?? null,
+    lowStockThreshold: row.low_stock_threshold,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -95,7 +96,7 @@ function normalizeProduct(row) {
 
 function productValues(body) {
   const stock = Number(body.stock) || 0
-  return [body.name, body.category, Number(body.price) || 0, stock, stock === 0 ? 'Out of stock' : body.status || 'Active', body.media?.name || null, body.media?.type || null, body.media?.url || null]
+  return [body.name, body.category, Number(body.price) || 0, stock, stock === 0 ? 'Out of stock' : body.status || 'Active', body.media?.name || null, body.media?.type || null, body.media?.url || null, Math.max(0, Number.parseInt(body.lowStockThreshold, 10) || 5)]
 }
 
 function generateSku() {
@@ -281,6 +282,30 @@ app.get('/api/products/archived', requireAuth, async (_request, response, next) 
   } catch (error) { next(error) }
 })
 
+app.get('/api/products/low-stock', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL AND stock <= low_stock_threshold ORDER BY stock ASC`)
+    response.json(result.rows.map(normalizeProduct))
+  } catch (error) { next(error) }
+})
+
+app.get('/api/stats', requireAuth, async (_request, response, next) => {
+  try {
+    const totals = await pool.query('SELECT COUNT(*)::int AS total_products, COALESCE(SUM(stock), 0)::int AS total_stock_units, COALESCE(SUM(price * stock), 0)::float AS inventory_value, COUNT(*) FILTER (WHERE stock = 0)::int AS out_of_stock_count, COUNT(*) FILTER (WHERE stock > 0 AND stock <= low_stock_threshold)::int AS low_stock_count, COUNT(DISTINCT category)::int AS category_count FROM products WHERE deleted_at IS NULL')
+    const byCategory = await pool.query('SELECT category, COUNT(*)::int AS product_count, COALESCE(SUM(stock), 0)::int AS stock_units, COALESCE(SUM(price * stock), 0)::float AS value FROM products WHERE deleted_at IS NULL GROUP BY category ORDER BY category ASC')
+    const row = totals.rows[0]
+    response.json({
+      totalProducts: row.total_products,
+      totalStockUnits: row.total_stock_units,
+      inventoryValue: row.inventory_value,
+      outOfStockCount: row.out_of_stock_count,
+      lowStockCount: row.low_stock_count,
+      categoryCount: row.category_count,
+      byCategory: byCategory.rows.map((item) => ({ category: item.category, productCount: item.product_count, stockUnits: item.stock_units, value: item.value })),
+    })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/products', requireAuth, async (request, response, next) => {
   const client = await pool.connect()
   try {
@@ -300,7 +325,7 @@ app.post('/api/products', requireAuth, async (request, response, next) => {
       // SAVEPOINT and rolls back to it on a 23505 collision before the next retry.
       await client.query('SAVEPOINT sku_attempt')
       try {
-        const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${productFields}`, [...values, sku])
+        const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${productFields}`, [...values, sku])
         row = result.rows[0]
         await client.query('RELEASE SAVEPOINT sku_attempt')
         break
@@ -338,7 +363,7 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
     const newStock = values[3]
     const provided = String(request.body.sku || '').trim()
     const sku = provided || existing.rows[0].sku
-    const result = await client.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, sku=$9, updated_at=NOW() WHERE id=$10 RETURNING ${productFields}`, [...values, sku, request.params.id])
+    const result = await client.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, low_stock_threshold=$9, sku=$10, updated_at=NOW() WHERE id=$11 RETURNING ${productFields}`, [...values, sku, request.params.id])
     if (newStock !== oldStock) {
       const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
       const userName = userResult.rows[0]?.name ?? null
@@ -416,7 +441,7 @@ app.post('/api/products/bulk', requireAuth, async (request, response) => {
           // transaction; roll back to it before retrying with a fresh SKU.
           await client.query('SAVEPOINT sku_attempt')
           try {
-            const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${productFields}`, [...values, sku])
+            const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${productFields}`, [...values, sku])
             row = result.rows[0]
             await client.query('RELEASE SAVEPOINT sku_attempt')
             break

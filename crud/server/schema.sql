@@ -18,6 +18,7 @@ CREATE INDEX IF NOT EXISTS products_created_at_idx ON products(created_at DESC);
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS sku VARCHAR(64);
 ALTER TABLE products ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 5 CHECK (low_stock_threshold >= 0);
 CREATE UNIQUE INDEX IF NOT EXISTS products_sku_idx ON products(sku) WHERE sku IS NOT NULL;
 CREATE INDEX IF NOT EXISTS products_deleted_at_idx ON products(deleted_at);
 
