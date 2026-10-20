@@ -53,10 +53,11 @@ function getTransporter(config) {
 }
 
 function buildMessage({ code, purpose }) {
-  const isReset = purpose === 'reset'
-  const intro = isReset
+  const intro = purpose === 'reset'
     ? 'Berikut kode OTP untuk mereset password akun Ifal Store Anda.'
-    : 'Berikut kode OTP untuk menyelesaikan proses masuk ke akun Ifal Store Anda.'
+    : purpose === 'register'
+      ? 'Berikut kode OTP untuk memverifikasi email akun Ifal Store Anda.'
+      : 'Berikut kode OTP untuk menyelesaikan proses masuk ke akun Ifal Store Anda.'
   const subject = 'Kode OTP Ifal Store'
   const text = [
     intro,
@@ -82,6 +83,8 @@ function buildMessage({ code, purpose }) {
 function logDevOtp({ to, code, purpose }) {
   if (purpose === 'reset') {
     console.log(`[DEV OTP] Kode reset password untuk ${to}: ${code}`)
+  } else if (purpose === 'register') {
+    console.log(`[DEV OTP] Kode verifikasi pendaftaran untuk ${to}: ${code}`)
   } else {
     console.log(`[DEV OTP] Kode login untuk ${to}: ${code}`)
   }

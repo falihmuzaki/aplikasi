@@ -268,6 +268,60 @@ app.post('/api/auth/password/reset', loginLimiter, async (request, response, nex
   } catch (error) { next(error) }
 })
 
+// Public self-registration. New accounts are always role 'staff' and created inactive
+// (is_active=FALSE) until a registration OTP is verified; role is never read from the body.
+app.post('/api/auth/register', otpSendLimiter, async (request, response, next) => {
+  try {
+    const name = String(request.body.name || '').trim()
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const password = String(request.body.password || '')
+    const passwordConfirmation = String(request.body.password_confirmation || '')
+    if (!name) return response.status(400).json({ message: 'Nama wajib diisi.' })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return response.status(400).json({ message: 'Format email tidak valid.' })
+    if (password !== passwordConfirmation || password.length < 8) return response.status(400).json({ message: 'Password minimal 8 karakter dan konfirmasi harus sama.' })
+    const existing = await pool.query('SELECT id, is_active FROM users WHERE email=$1', [email])
+    const user = existing.rows[0]
+    if (user && user.is_active) return response.status(409).json({ message: 'Email sudah terdaftar.' })
+    const code = generateOtp()
+    if (user) {
+      await pool.query("UPDATE users SET name=$1, password_hash=$2, role='staff', register_otp_hash=$3, register_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$4", [name, hashPassword(password), hashOtp(code), user.id])
+    } else {
+      await pool.query("INSERT INTO users (name, email, password_hash, role, is_active, register_otp_hash, register_otp_expires_at) VALUES ($1,$2,$3,'staff',FALSE,$4,NOW() + INTERVAL '10 minutes')", [name, email, hashPassword(password), hashOtp(code)])
+    }
+    await sendOtpEmail({ to: email, code, purpose: 'register' })
+    response.json({ message: 'Kode verifikasi telah dikirim ke email Anda.', requiresOtp: true })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/register/verify', loginLimiter, async (request, response, next) => {
+  try {
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const otp = String(request.body.otp || '')
+    const result = await pool.query(`SELECT ${userFields}, register_otp_hash, register_otp_expires_at FROM users WHERE email=$1 AND is_active=FALSE`, [email])
+    const user = result.rows[0]
+    if (!user || !user.register_otp_hash || new Date(user.register_otp_expires_at) <= new Date() || !verifyOtp(otp, user.register_otp_hash)) {
+      return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
+    }
+    request.clearRateLimit?.()
+    const updated = await pool.query(`UPDATE users SET is_active=TRUE, register_otp_hash=NULL, register_otp_expires_at=NULL, updated_at=NOW() WHERE id=$1 RETURNING ${userFields}`, [user.id])
+    response.json({ user: normalizeUser(updated.rows[0]), token: signToken(user.id) })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/register/resend', otpSendLimiter, async (request, response, next) => {
+  try {
+    const email = String(request.body.email || '').trim().toLowerCase()
+    const result = await pool.query('SELECT id, email FROM users WHERE email=$1 AND is_active=FALSE', [email])
+    const user = result.rows[0]
+    if (user) {
+      const code = generateOtp()
+      await pool.query("UPDATE users SET register_otp_hash=$1, register_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$2", [hashOtp(code), user.id])
+      await sendOtpEmail({ to: user.email, code, purpose: 'register' })
+    }
+    response.json({ message: 'Kode verifikasi baru telah dikirim.' })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/products', requireAuth, async (_request, response, next) => {
   try {
     const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL ORDER BY created_at DESC`)

@@ -59,6 +59,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS register_otp_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS register_otp_expires_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);
 CREATE INDEX IF NOT EXISTS users_active_idx ON users(is_active);
