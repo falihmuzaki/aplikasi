@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { CirclePlus, Printer, RefreshCw, Save, Truck } from 'lucide-react'
 
 const API_URL = 'http://localhost:3001/api'
-const headers = () => ({ Authorization: `******'lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
+const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0)
 
 async function api(path, options = {}) {
@@ -26,18 +26,25 @@ function useLoad(path, refreshKey = 0) {
 export function WarehousesView({ warehouses, onRefresh, onToast }) {
   const [selected, setSelected] = useState('')
   const [stock, setStock] = useState([])
+  const [sourceStock, setSourceStock] = useState({ warehouseId: '', items: [] })
+  const [transferRefresh, setTransferRefresh] = useState(0)
   const [form, setForm] = useState({ name: '', address: '' })
   const [transfer, setTransfer] = useState({ sourceWarehouseId: '', destinationWarehouseId: '', productId: '', quantity: '1', notes: '' })
   const [error, setError] = useState('')
   const selectedId = selected || String(warehouses[0]?.id || '')
   useEffect(() => { if (selectedId) api(`/warehouses/${selectedId}/stock`).then(setStock).catch((cause) => setError(cause.message)) }, [selectedId, warehouses])
+  useEffect(() => {
+    if (!transfer.sourceWarehouseId) return
+    api(`/warehouses/${transfer.sourceWarehouseId}/stock`).then((items) => setSourceStock({ warehouseId: transfer.sourceWarehouseId, items })).catch((cause) => setError(cause.message))
+  }, [transfer.sourceWarehouseId, transferRefresh])
+  const sourceStockItems = sourceStock.warehouseId === transfer.sourceWarehouseId ? sourceStock.items : []
   const addWarehouse = async (event) => {
     event.preventDefault()
     try { await api('/warehouses', { method: 'POST', body: JSON.stringify(form) }); setForm({ name: '', address: '' }); onRefresh(); onToast('Gudang ditambahkan.') } catch (cause) { setError(cause.message) }
   }
   const doTransfer = async (event) => {
     event.preventDefault()
-    try { await api('/stock-transfers', { method: 'POST', body: JSON.stringify({ ...transfer, sourceWarehouseId: Number(transfer.sourceWarehouseId), destinationWarehouseId: Number(transfer.destinationWarehouseId), productId: Number(transfer.productId), quantity: Number(transfer.quantity) }) }); setError(''); onRefresh(); onToast('Transfer stok berhasil dicatat.') } catch (cause) { setError(cause.message) }
+    try { await api('/stock-transfers', { method: 'POST', body: JSON.stringify({ ...transfer, sourceWarehouseId: Number(transfer.sourceWarehouseId), destinationWarehouseId: Number(transfer.destinationWarehouseId), productId: Number(transfer.productId), quantity: Number(transfer.quantity) }) }); setError(''); setTransferRefresh((value) => value + 1); onRefresh(); onToast('Transfer stok berhasil dicatat.') } catch (cause) { setError(cause.message) }
   }
   return <>
     <header className="topbar"><div><p className="breadcrumb">Inventory / <span>Warehouses</span></p><h1>Gudang & transfer stok</h1></div></header>
@@ -47,7 +54,7 @@ export function WarehousesView({ warehouses, onRefresh, onToast }) {
       <div className="table-wrap"><table><thead><tr><th>Nama</th><th>Alamat</th><th>Status</th><th>Total unit</th></tr></thead><tbody>{warehouses.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.address || '—'}</td><td>{item.isDefault ? 'Gudang utama' : 'Gudang'}</td><td>{item.stockUnits}</td></tr>)}</tbody></table></div>
     </section>
     <section className="catalog-panel"><div className="panel-heading"><div><h2>Transfer antar gudang</h2><p className="muted">Pindahkan stok tanpa mengubah total inventaris.</p></div></div>
-      <form className="toolbar" onSubmit={doTransfer}><select required value={transfer.sourceWarehouseId} onChange={(event) => setTransfer({ ...transfer, sourceWarehouseId: event.target.value })}><option value="">Gudang asal</option>{warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select required value={transfer.destinationWarehouseId} onChange={(event) => setTransfer({ ...transfer, destinationWarehouseId: event.target.value })}><option value="">Gudang tujuan</option>{warehouses.filter((item) => String(item.id) !== transfer.sourceWarehouseId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select required value={transfer.productId} onChange={(event) => setTransfer({ ...transfer, productId: event.target.value })}><option value="">Produk</option>{stock.map((item) => item.stock > 0 && <option key={item.productId} value={item.productId}>{item.name} · {item.stock} unit</option>)}</select><input required type="number" min="1" step="1" value={transfer.quantity} onChange={(event) => setTransfer({ ...transfer, quantity: event.target.value })} /><button className="primary-button"><Truck size={16} /> Transfer</button></form>
+      <form className="toolbar" onSubmit={doTransfer}><select required value={transfer.sourceWarehouseId} onChange={(event) => setTransfer({ ...transfer, sourceWarehouseId: event.target.value, productId: '' })}><option value="">Gudang asal</option>{warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select required value={transfer.destinationWarehouseId} onChange={(event) => setTransfer({ ...transfer, destinationWarehouseId: event.target.value })}><option value="">Gudang tujuan</option>{warehouses.filter((item) => String(item.id) !== transfer.sourceWarehouseId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select required value={transfer.productId} onChange={(event) => setTransfer({ ...transfer, productId: event.target.value })}><option value="">Produk</option>{sourceStockItems.map((item) => item.stock > 0 && <option key={item.productId} value={item.productId}>{item.name} · {item.stock} unit</option>)}</select><input required type="number" min="1" step="1" value={transfer.quantity} onChange={(event) => setTransfer({ ...transfer, quantity: event.target.value })} /><button className="primary-button"><Truck size={16} /> Transfer</button></form>
       <div className="toolbar"><label>Stok gudang<select value={selectedId} onChange={(event) => setSelected(event.target.value)}>{warehouses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>
       <div className="table-wrap"><table><thead><tr><th>Produk</th><th>SKU</th><th>Barcode</th><th>Stok</th><th>Batas rendah</th></tr></thead><tbody>{stock.map((item) => <tr key={item.productId}><td>{item.name}</td><td>{item.sku || '—'}</td><td>{item.barcode || '—'}</td><td>{item.stock}</td><td>{item.lowStockThreshold}</td></tr>)}</tbody></table></div>
     </section>

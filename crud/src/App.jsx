@@ -463,8 +463,52 @@ function App() {
     reader.onload = () => setForm((current) => ({ ...current, media: { name: file.name, type: file.type, url: reader.result } }))
     reader.readAsDataURL(file)
   }
-  const handleSubmit = async (event) => { event.preventDefault(); const stock = Number(form.stock) || 0; const product = { ...form, price: Number(form.price) || 0, stock, status: stock === 0 ? 'Out of stock' : form.status, lowStockThreshold: Number(form.lowStockThreshold) || 5 }; try { const response = await fetch(`${API_URL}/products${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(product) }); if (!response.ok) throw new Error('Save failed'); const savedProduct = await response.json(); setProducts((current) => editingId ? current.map((item) => item.id === editingId ? savedProduct : item) : [savedProduct, ...current]); setDatabaseOnline(true); pushToast('success', editingId ? 'Produk diperbarui.' : 'Produk ditambahkan.') } catch { setProducts((current) => editingId ? current.map((item) => item.id === editingId ? { ...product, id: editingId } : item) : [{ ...product, id: Date.now() }, ...current]); setDatabaseOnline(false); pushToast('error', 'Gagal menyimpan ke server. Disimpan lokal.') } setIsModalOpen(false) }
-  const confirmDeleteProduct = async () => { const id = pendingProduct.id; try { const response = await fetch(`${API_URL}/products/${id}`, { method: 'DELETE', headers: authHeaders() }); if (!response.ok) throw new Error('Delete failed'); setDatabaseOnline(true); pushToast('success', 'Produk diarsipkan.') } catch { setDatabaseOnline(false); pushToast('error', 'Gagal hapus di server. Dihapus lokal.') } setProducts((current) => current.filter((product) => product.id !== id)); setPendingProduct(null) }
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    const stock = Number(form.stock) || 0
+    const product = { ...form, price: Number(form.price) || 0, stock, status: stock === 0 ? 'Out of stock' : form.status, lowStockThreshold: Number(form.lowStockThreshold) || 5 }
+    let response
+    try {
+      response = await fetch(`${API_URL}/products${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(product) })
+    } catch {
+      setProducts((current) => editingId ? current.map((item) => item.id === editingId ? { ...product, id: editingId } : item) : [{ ...product, id: Date.now() }, ...current])
+      setDatabaseOnline(false)
+      setIsModalOpen(false)
+      pushToast('error', 'Server tidak tersedia. Produk disimpan sementara di sesi lokal.')
+      return
+    }
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      pushToast('error', result.message || 'Produk gagal disimpan.')
+      return
+    }
+    setProducts((current) => editingId ? current.map((item) => item.id === editingId ? result : item) : [result, ...current])
+    setDatabaseOnline(true)
+    setIsModalOpen(false)
+    pushToast('success', editingId ? 'Produk diperbarui.' : 'Produk ditambahkan.')
+  }
+  const confirmDeleteProduct = async () => {
+    const id = pendingProduct.id
+    let response
+    try {
+      response = await fetch(`${API_URL}/products/${id}`, { method: 'DELETE', headers: authHeaders() })
+    } catch {
+      setProducts((current) => current.filter((product) => product.id !== id))
+      setDatabaseOnline(false)
+      setPendingProduct(null)
+      pushToast('error', 'Server tidak tersedia. Produk dihapus sementara dari sesi lokal.')
+      return
+    }
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}))
+      pushToast('error', result.message || 'Produk gagal dihapus.')
+      return
+    }
+    setProducts((current) => current.filter((product) => product.id !== id))
+    setDatabaseOnline(true)
+    setPendingProduct(null)
+    pushToast('success', 'Produk diarsipkan.')
+  }
   const loadArchived = () => fetch(`${API_URL}/products/archived`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : []).then((data) => { setArchivedProducts(Array.isArray(data) ? data : []); setDatabaseOnline(true) }).catch(() => { setArchivedProducts([]); setDatabaseOnline(false) })
   const restoreProduct = async (id) => { try { const response = await fetch(`${API_URL}/products/${id}/restore`, { method: 'POST', headers: authHeaders() }); if (!response.ok) throw new Error('Restore failed'); setDatabaseOnline(true); pushToast('success', 'Produk dipulihkan.'); await loadArchived(); await refreshProducts() } catch { pushToast('error', 'Gagal memulihkan produk.') } }
   const confirmPermanentDelete = async () => { const id = pendingPermanent.id; try { const response = await fetch(`${API_URL}/products/${id}/permanent`, { method: 'DELETE', headers: authHeaders() }); if (!response.ok) throw new Error('Delete failed'); setDatabaseOnline(true); pushToast('success', 'Produk dihapus permanen.'); setArchivedProducts((current) => current.filter((product) => product.id !== id)) } catch { pushToast('error', 'Gagal menghapus permanen.') } setPendingPermanent(null) }

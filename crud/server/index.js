@@ -104,18 +104,28 @@ app.post('/api/product-batches', requireAuth, async (request, response, next) =>
   const serialNumber = String(request.body.serialNumber || '').trim() || null
   const expiresAt = request.body.expiresAt ? String(request.body.expiresAt) : null
   if (![productId, warehouseId, quantity].every(Number.isSafeInteger) || productId < 1 || warehouseId < 1 || quantity < 1 || !batchNumber || batchNumber.length > 120 || (serialNumber && serialNumber.length > 120) || (expiresAt && !/^\d{4}-\d{2}-\d{2}$/.test(expiresAt)) || (serialNumber && quantity !== 1)) return response.status(400).json({ message: 'Informasi batch, jumlah, atau tanggal kedaluwarsa tidak valid.' })
+  const client = await pool.connect()
   try {
-    const product = await pool.query('SELECT track_batches FROM products WHERE id=$1 AND deleted_at IS NULL', [productId])
-    if (!product.rowCount || !product.rows[0].track_batches) return response.status(400).json({ message: 'Aktifkan pelacakan batch pada produk terlebih dahulu.' })
-    const available = await pool.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2', [warehouseId, productId])
-    const alreadyAssigned = await pool.query('SELECT COALESCE(SUM(quantity),0)::int AS quantity FROM product_batches WHERE warehouse_id=$1 AND product_id=$2', [warehouseId, productId])
-    if (!available.rowCount || Number(alreadyAssigned.rows[0].quantity) + quantity > available.rows[0].stock) return response.status(409).json({ message: 'Jumlah batch melebihi stok yang tersedia di gudang.' })
-    const result = await pool.query('INSERT INTO product_batches (product_id, warehouse_id, batch_number, serial_number, expires_at, quantity) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, expires_at', [productId, warehouseId, batchNumber, serialNumber, expiresAt, quantity])
+    await client.query('BEGIN')
+    const product = await client.query('SELECT track_batches FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [productId])
+    if (!product.rowCount || !product.rows[0].track_batches) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Aktifkan pelacakan batch pada produk terlebih dahulu.' })
+    }
+    const available = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [warehouseId, productId])
+    const alreadyAssigned = await client.query('SELECT COALESCE(SUM(quantity),0)::int AS quantity FROM product_batches WHERE warehouse_id=$1 AND product_id=$2', [warehouseId, productId])
+    if (!available.rowCount || Number(alreadyAssigned.rows[0].quantity) + quantity > available.rows[0].stock) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Jumlah batch melebihi stok yang tersedia di gudang.' })
+    }
+    const result = await client.query('INSERT INTO product_batches (product_id, warehouse_id, batch_number, serial_number, expires_at, quantity) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, expires_at', [productId, warehouseId, batchNumber, serialNumber, expiresAt, quantity])
+    await client.query('COMMIT')
     response.status(201).json({ id: Number(result.rows[0].id), productId, warehouseId, batchNumber, serialNumber, expiresAt: result.rows[0].expires_at, quantity })
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
     if (error.code === '23505') return response.status(409).json({ message: 'Nomor batch atau serial sudah tercatat.' })
     next(error)
-  }
+  } finally { client.release() }
 })
 
 const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, barcode, track_batches, deleted_at, created_at, updated_at'
@@ -530,6 +540,11 @@ app.post('/api/stock-transfers', requireAuth, async (request, response, next) =>
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    const product = await client.query('SELECT name, track_batches FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [productId])
+    if (!product.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Produk tidak ditemukan.' })
+    }
     const source = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [sourceWarehouseId, productId])
     if (!source.rowCount || source.rows[0].stock < quantity) {
       await client.query('ROLLBACK')
@@ -537,11 +552,6 @@ app.post('/api/stock-transfers', requireAuth, async (request, response, next) =>
     }
     const destination = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [destinationWarehouseId, productId])
     const destinationStock = destination.rows[0]?.stock || 0
-    const product = await client.query('SELECT name, track_batches FROM products WHERE id=$1 AND deleted_at IS NULL FOR SHARE', [productId])
-    if (!product.rowCount) {
-      await client.query('ROLLBACK')
-      return response.status(404).json({ message: 'Produk tidak ditemukan.' })
-    }
     await client.query('UPDATE warehouse_stocks SET stock=stock-$1 WHERE warehouse_id=$2 AND product_id=$3', [quantity, sourceWarehouseId, productId])
     await client.query('INSERT INTO warehouse_stocks (warehouse_id, product_id, stock) VALUES ($1,$2,$3) ON CONFLICT (warehouse_id, product_id) DO UPDATE SET stock=warehouse_stocks.stock+EXCLUDED.stock', [destinationWarehouseId, productId, quantity])
     const user = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
@@ -822,7 +832,7 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const existing = await client.query('SELECT stock, sku FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [request.params.id])
+    const existing = await client.query('SELECT stock, sku, track_batches FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [request.params.id])
     if (!existing.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Product not found' })
@@ -836,6 +846,10 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
       return response.status(400).json({ message: 'Barcode maksimal 120 karakter.' })
     }
     const trackBatches = Boolean(request.body.trackBatches)
+    if (newStock !== oldStock && (existing.rows[0].track_batches || trackBatches)) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Stok produk dengan pelacakan batch harus disesuaikan melalui stok opname atau penerimaan pembelian agar jumlah batch tetap akurat.' })
+    }
     const warehouseResult = await client.query('SELECT id FROM warehouses WHERE is_default=TRUE')
     const defaultWarehouseId = warehouseResult.rows[0]?.id
     const otherStockResult = await client.query('SELECT COALESCE(SUM(stock),0)::int AS stock FROM warehouse_stocks WHERE product_id=$1 AND warehouse_id<>$2', [request.params.id, defaultWarehouseId])
@@ -1302,7 +1316,7 @@ app.post('/api/supplier-returns', requireAuth, async (request, response, next) =
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const orderResult = await client.query('SELECT id, supplier_id, warehouse_id FROM purchase_orders WHERE id=$1 FOR SHARE', [purchaseOrderId])
+    const orderResult = await client.query('SELECT id, supplier_id, warehouse_id FROM purchase_orders WHERE id=$1 FOR UPDATE', [purchaseOrderId])
     if (!orderResult.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Pesanan pembelian tidak ditemukan.' })
