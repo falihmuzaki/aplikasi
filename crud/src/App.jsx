@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, Archive, ArrowDownUp, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { code128BarcodeSvg } from './barcode'
+import { BatchesView, BarcodeView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import './App.css'
 
 const seedProducts = [
@@ -11,7 +12,7 @@ const seedProducts = [
   { id: 5, name: 'Running Sneakers', category: 'Fashion', price: 1680000, stock: 3, status: 'Low stock' },
 ]
 const defaultCategories = ['Electronics', 'Home & Living', 'Accessories', 'Fashion']
-const blankForm = { name: '', category: 'Electronics', price: '', stock: '', status: 'Active', media: null, sku: '', lowStockThreshold: 5 }
+const blankForm = { name: '', category: 'Electronics', price: '', stock: '', status: 'Active', media: null, sku: '', barcode: '', trackBatches: false, lowStockThreshold: 5 }
 const LOW_STOCK_THRESHOLD = 5
 const blankUser = { name: '', email: '', password: '', role: 'staff', isActive: true, mfaEnabled: false }
 const API_URL = 'http://localhost:3001/api'
@@ -98,6 +99,7 @@ function PurchasesView({ purchases, suppliers, products, onCreate, onReceive }) 
   const [receiving, setReceiving] = useState(null)
   const [form, setForm] = useState({ supplierId: '', notes: '', items: [{ productId: '', quantity: '1', unitCost: '0' }] })
   const [receiveQuantities, setReceiveQuantities] = useState({})
+  const [receiveInfo, setReceiveInfo] = useState({})
   const [saving, setSaving] = useState(false)
   const openCreate = () => { setForm({ supplierId: suppliers[0] ? String(suppliers[0].id) : '', notes: '', items: [{ productId: '', quantity: '1', unitCost: '0' }] }); setIsOpen(true) }
   const updateItem = (index, key, value) => setForm((current) => ({ ...current, items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item) }))
@@ -111,11 +113,12 @@ function PurchasesView({ purchases, suppliers, products, onCreate, onReceive }) 
   const openReceive = (order) => {
     setReceiving(order)
     setReceiveQuantities(Object.fromEntries(order.items.filter((item) => item.quantity > item.receivedQuantity).map((item) => [item.id, String(item.quantity - item.receivedQuantity)])))
+    setReceiveInfo(Object.fromEntries(order.items.map((item) => [item.id, { batchNumber: '', serialNumber: '', expiresAt: '' }])))
   }
   const submitReceive = async (event) => {
     event.preventDefault()
     setSaving(true)
-    const items = receiving.items.map((item) => ({ itemId: item.id, quantity: Number(receiveQuantities[item.id] || 0) })).filter((item) => item.quantity > 0)
+    const items = receiving.items.map((item) => ({ itemId: item.id, quantity: Number(receiveQuantities[item.id] || 0), ...(receiveInfo[item.id] || {}) })).filter((item) => item.quantity > 0)
     const ok = await onReceive(receiving.id, items)
     setSaving(false)
     if (ok) setReceiving(null)
@@ -128,7 +131,7 @@ function PurchasesView({ purchases, suppliers, products, onCreate, onReceive }) 
     {suppliers.length === 0 && <section className="catalog-panel empty-hint">Tambahkan pemasok terlebih dahulu sebelum membuat pesanan pembelian.</section>}
     <section className="catalog-panel"><div className="panel-heading"><div><h2>Semua pesanan</h2><p className="muted">{purchases.length} pesanan tercatat.</p></div></div><div className="table-wrap"><table><thead><tr><th>No. pesanan</th><th>Pemasok</th><th>Produk</th><th>Total unit</th><th>Status</th><th>Dibuat</th><th>Aksi</th></tr></thead><tbody>{purchases.map((order) => <tr key={order.id}><td><strong>{order.orderNumber}</strong></td><td>{order.supplierName}</td><td>{order.items.map((item) => `${item.productName} (${item.receivedQuantity}/${item.quantity})`).join(', ')}</td><td>{order.items.reduce((sum, item) => sum + item.quantity, 0)}</td><td><span className={`purchase-status ${order.status}`}>{statusLabels[order.status]}</span></td><td>{new Date(order.createdAt).toLocaleDateString('id-ID')}</td><td>{order.status !== 'received' && <button className="secondary-button" onClick={() => openReceive(order)}>Terima stok</button>}</td></tr>)}{purchases.length === 0 && <tr><td colSpan="7" className="empty-state">Belum ada pesanan pembelian.</td></tr>}</tbody></table></div></section>
     {isOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setIsOpen(false)}><form className="modal purchase-modal" onSubmit={submit}><div className="modal-heading"><div><h2>Buat pesanan pembelian</h2><p className="muted">Pesanan langsung berstatus dipesan sampai barang diterima.</p></div><button type="button" className="close-button" onClick={() => setIsOpen(false)}><X size={19} /></button></div><label>Pemasok<select required value={form.supplierId} onChange={(event) => setForm({ ...form, supplierId: event.target.value })}><option value="">Pilih pemasok</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>{form.items.map((item, index) => <div className="purchase-item-form" key={index}><label>Produk<select required value={item.productId} onChange={(event) => updateItem(index, 'productId', event.target.value)}><option value="">Pilih produk</option>{products.map((product) => <option key={product.id} value={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ''}</option>)}</select></label><label>Jumlah<input required type="number" min="1" step="1" value={item.quantity} onChange={(event) => updateItem(index, 'quantity', event.target.value)} /></label><label>Harga beli/unit<input required type="number" min="0" step="0.01" value={item.unitCost} onChange={(event) => updateItem(index, 'unitCost', event.target.value)} /></label>{form.items.length > 1 && <button type="button" className="remove-media" onClick={() => setForm((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><X size={14} /> Hapus baris</button>}</div>)}<button type="button" className="secondary-button" onClick={() => setForm((current) => ({ ...current, items: [...current.items, { productId: '', quantity: '1', unitCost: '0' }] }))}>Tambah produk</button><label>Catatan<textarea rows="2" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setIsOpen(false)}>Batal</button><button type="submit" className="primary-button" disabled={saving || !form.supplierId || products.length === 0}>{saving ? 'Menyimpan...' : 'Buat pesanan'}</button></div></form></div>}
-    {receiving && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setReceiving(null)}><form className="modal purchase-modal" onSubmit={submitReceive}><div className="modal-heading"><div><h2>Terima barang</h2><p className="muted">{receiving.orderNumber} · {receiving.supplierName}</p></div><button type="button" className="close-button" onClick={() => setReceiving(null)}><X size={19} /></button></div>{receiving.items.filter((item) => item.quantity > item.receivedQuantity).map((item) => <label key={item.id}>{item.productName} <small className="field-hint">Sisa {item.quantity - item.receivedQuantity} unit</small><input type="number" min="0" max={item.quantity - item.receivedQuantity} step="1" value={receiveQuantities[item.id] || ''} onChange={(event) => setReceiveQuantities((current) => ({ ...current, [item.id]: event.target.value }))} /></label>)}<p className="muted">Jumlah 0 akan melewati produk tersebut. Stok bertambah saat penerimaan disimpan.</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReceiving(null)}>Batal</button><button type="submit" className="primary-button" disabled={saving || !Object.values(receiveQuantities).some((quantity) => Number(quantity) > 0)}>{saving ? 'Menyimpan...' : 'Catat penerimaan'}</button></div></form></div>}
+    {receiving && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setReceiving(null)}><form className="modal purchase-modal" onSubmit={submitReceive}><div className="modal-heading"><div><h2>Terima barang</h2><p className="muted">{receiving.orderNumber} · {receiving.supplierName}</p></div><button type="button" className="close-button" onClick={() => setReceiving(null)}><X size={19} /></button></div>{receiving.items.filter((item) => item.quantity > item.receivedQuantity).map((item) => <div key={item.id}><label>{item.productName} <small className="field-hint">Sisa {item.quantity - item.receivedQuantity} unit</small><input type="number" min="0" max={item.quantity - item.receivedQuantity} step="1" value={receiveQuantities[item.id] || ''} onChange={(event) => setReceiveQuantities((current) => ({ ...current, [item.id]: event.target.value }))} /></label>{item.trackBatches && Number(receiveQuantities[item.id]) > 0 && <><label>Nomor batch<input required maxLength="120" value={receiveInfo[item.id]?.batchNumber || ''} onChange={(event) => setReceiveInfo((current) => ({ ...current, [item.id]: { ...current[item.id], batchNumber: event.target.value } }))} /></label><label>Nomor seri (opsional)<input maxLength="120" value={receiveInfo[item.id]?.serialNumber || ''} onChange={(event) => setReceiveInfo((current) => ({ ...current, [item.id]: { ...current[item.id], serialNumber: event.target.value } }))} /></label><label>Tanggal kedaluwarsa<input type="date" value={receiveInfo[item.id]?.expiresAt || ''} onChange={(event) => setReceiveInfo((current) => ({ ...current, [item.id]: { ...current[item.id], expiresAt: event.target.value } }))} /></label></>}</div>)}<p className="muted">Jumlah 0 akan melewati produk tersebut. Stok bertambah saat penerimaan disimpan.</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setReceiving(null)}>Batal</button><button type="submit" className="primary-button" disabled={saving || !Object.values(receiveQuantities).some((quantity) => Number(quantity) > 0)}>{saving ? 'Menyimpan...' : 'Catat penerimaan'}</button></div></form></div>}
   </>
 }
 
@@ -289,6 +292,9 @@ function App() {
   const [users, setUsers] = useState([])
   const [categoryList, setCategoryList] = useState([])
   const [suppliers, setSuppliers] = useState([])
+  const [warehouses, setWarehouses] = useState([])
+  const [warehouseRefresh, setWarehouseRefresh] = useState(0)
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState('')
   const [purchases, setPurchases] = useState([])
   const [customers, setCustomers] = useState([])
   const [sales, setSales] = useState([])
@@ -301,6 +307,8 @@ function App() {
   const [stockLog, setStockLog] = useState([])
   const [bellOpen, setBellOpen] = useState(false)
   const [importRows, setImportRows] = useState(null)
+  const [featureView, setFeatureView] = useState('')
+  const pushToast = (type, message) => { const id = Date.now() + Math.random(); setToasts((list) => [...list, { id, type, message }]); setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 4000) }
   useEffect(() => { if (!isAdmin && (activeView === 'users' || activeView === 'stock-log')) setActiveView('products') }, [isAdmin, activeView])
   useEffect(() => localStorage.setItem('lumina-products', JSON.stringify(products)), [products])
   useEffect(() => {
@@ -315,6 +323,10 @@ function App() {
     if (!isAuthenticated) return
     fetch(`${API_URL}/categories`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setCategoryList(data); setDatabaseOnline(true) }).catch(() => setDatabaseOnline(false))
   }, [isAuthenticated])
+  useEffect(() => {
+    if (!isAuthenticated) return
+    fetch(`${API_URL}/warehouses`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setWarehouses(data); setSelectedWarehouseId((current) => current || String(data.find((item) => item.isDefault)?.id || data[0]?.id || '')) }).catch((error) => pushToast('error', error.message || 'Gagal memuat gudang.'))
+  }, [isAuthenticated, warehouseRefresh])
   useEffect(() => {
     if (!isAuthenticated || activeView !== 'archive') return
     fetch(`${API_URL}/products/archived`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : []).then((data) => { setArchivedProducts(Array.isArray(data) ? data : []); setDatabaseOnline(true) }).catch(() => { setArchivedProducts([]); setDatabaseOnline(false) })
@@ -348,7 +360,6 @@ function App() {
   const todayLabel = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
   const firstName = (currentUser?.name || 'there').split(' ')[0]
-  const pushToast = (type, message) => { const id = Date.now() + Math.random(); setToasts((list) => [...list, { id, type, message }]); setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 4000) }
   useEffect(() => {
     if (!isAuthenticated || !['suppliers', 'purchases'].includes(activeView)) return
     fetch(`${API_URL}/suppliers`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('Gagal memuat pemasok.'); return response.json() }).then((data) => { setSuppliers(data); setDatabaseOnline(true) }).catch((error) => { setDatabaseOnline(false); pushToast('error', error.message || 'Gagal memuat pemasok.') })
@@ -531,6 +542,18 @@ function App() {
     } catch (error) { pushToast('error', error.message || 'Password gagal diperbarui.'); return false }
   }
   const refreshProducts = () => fetch(`${API_URL}/products`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : null).then((data) => { if (data) setProducts(data) }).catch(() => {})
+  const refreshWarehouses = () => setWarehouseRefresh((value) => value + 1)
+  const refreshInventory = () => { refreshProducts(); refreshWarehouses() }
+  const saveProductMetadata = async (id, payload) => {
+    try {
+      const response = await fetch(`${API_URL}/products/${id}/metadata`, { method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.message || 'Metadata produk gagal disimpan.')
+      setProducts((current) => current.map((product) => product.id === id ? result : product))
+      setDatabaseOnline(true)
+      return true
+    } catch (error) { pushToast('error', error.message || 'Metadata produk gagal disimpan.'); return false }
+  }
   const saveCategory = async (payload, editingId) => {
     try {
       const response = await fetch(`${API_URL}/categories${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -576,7 +599,8 @@ function App() {
   }
   const createPurchase = async (payload) => {
     try {
-      const response = await fetch(`${API_URL}/purchases`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const defaultDueDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
+      const response = await fetch(`${API_URL}/purchases`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, warehouseId: Number(selectedWarehouseId) || undefined, dueDate: payload.dueDate || defaultDueDate }) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.message || 'Pesanan gagal dibuat.')
       setPurchases((current) => [result, ...current])
@@ -621,7 +645,7 @@ function App() {
   }
   const createSale = async (payload) => {
     try {
-      const response = await fetch(`${API_URL}/sales`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const response = await fetch(`${API_URL}/sales`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, warehouseId: Number(selectedWarehouseId) || undefined }) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.message || 'Pesanan penjualan gagal dibuat.')
       setSales((current) => [result, ...current])
@@ -668,6 +692,8 @@ function App() {
       {pendingProduct && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setPendingProduct(null)}><div className="modal"><div className="modal-heading"><div><h2>Delete product</h2><p className="muted">Arsipkan "{pendingProduct.name}"? Produk dipindahkan ke Archive dan masih bisa dipulihkan.</p></div><button type="button" className="close-button" onClick={() => setPendingProduct(null)}><X size={19} /></button></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setPendingProduct(null)}>Cancel</button><button type="button" className="danger-button" onClick={confirmDeleteProduct}><Trash2 size={15} /> Delete</button></div></div></div>}
       {pendingPermanent && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setPendingPermanent(null)}><div className="modal"><div className="modal-heading"><div><h2>Delete permanently</h2><p className="muted">Hapus "{pendingPermanent.name}" secara permanen? Tindakan ini tidak dapat dibatalkan.</p></div><button type="button" className="close-button" onClick={() => setPendingPermanent(null)}><X size={19} /></button></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setPendingPermanent(null)}>Cancel</button><button type="button" className="danger-button" onClick={confirmPermanentDelete}><Trash2 size={15} /> Delete permanently</button></div></div></div>}
       {importRows && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setImportRows(null)}><div className="modal import-modal"><div className="modal-heading"><div><h2>Import preview</h2><p className="muted">{importRows.filter((row) => row.valid).length} valid · {importRows.filter((row) => !row.valid).length} invalid dari {importRows.length} baris.</p></div><button type="button" className="close-button" onClick={() => setImportRows(null)}><X size={19} /></button></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>SKU</th><th>Issue</th></tr></thead><tbody>{importRows.map((row, index) => <tr key={index} className={row.valid ? '' : 'row-invalid'}><td>{row.name || '—'}</td><td>{row.category || '—'}</td><td>{Number.isNaN(row.price) ? '—' : row.price}</td><td>{Number.isNaN(row.stock) ? '—' : row.stock}</td><td>{row.sku || '—'}</td><td>{row.valid ? <span className="status active"><span></span>OK</span> : <span className="import-error">{row.errors.join(', ')}</span>}</td></tr>)}</tbody></table></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setImportRows(null)}>Cancel</button><button type="button" className="primary-button" disabled={importRows.every((row) => !row.valid)} onClick={confirmImport}><FileUp size={15} /> Import {importRows.filter((row) => row.valid).length} produk</button></div></div></div>}
+      <div className="feature-launcher" aria-label="Fitur operasional"><span>Gudang transaksi</span><select aria-label="Pilih gudang untuk transaksi baru" value={selectedWarehouseId} onChange={(event) => setSelectedWarehouseId(event.target.value)}>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select><span>Fitur:</span>{[['warehouses', 'Gudang'], ['stocktake', 'Stok opname'], ['payables', 'Utang pemasok'], ...(isAdmin ? [['reports', 'Laporan']] : []), ['receivables', 'Piutang'], ['restock', 'Restock'], ['barcode', 'Barcode'], ['batches', 'Batch']].map(([id, label]) => <button key={id} className={featureView === id ? 'active' : ''} onClick={() => setFeatureView(id)}>{label}</button>)}</div>
+      {featureView && <div className={`feature-overlay ${featureView === 'reports' ? 'report-print' : ''}`}><div className="feature-overlay-content"><button className="feature-close secondary-button" onClick={() => setFeatureView('')}>Tutup fitur</button>{featureView === 'warehouses' && <WarehousesView warehouses={warehouses} onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}{featureView === 'stocktake' && <StocktakeView warehouses={warehouses} onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}{featureView === 'payables' && <SupplierAccountingView onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}{featureView === 'reports' && isAdmin && <ReportsView />}{featureView === 'receivables' && <ReceivablesView />}{featureView === 'restock' && <RestockView />}{featureView === 'barcode' && <BarcodeView products={products} onSave={saveProductMetadata} onToast={(message) => pushToast('success', message)} />}{featureView === 'batches' && <BatchesView products={products} warehouses={warehouses} onToast={(message) => pushToast('success', message)} />}</div></div>}
       <div className="toast-container" role="status" aria-live="polite">{toasts.map((toast) => <div key={toast.id} className={`toast ${toast.type}`}>{toast.type === 'success' ? <Check size={15} /> : <X size={15} />}<span>{toast.message}</span></div>)}</div>
     </div>
   )

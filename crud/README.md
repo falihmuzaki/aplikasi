@@ -60,6 +60,26 @@ Pesanan juga memiliki nomor invoice permanen. Dari daftar penjualan, invoice dap
 
 Tabel `sales_payments` menyimpan riwayat pembayaran/refund beserta metode, referensi, pencatat, dan waktunya. Endpoint ber-token: `GET /api/customers`, `POST /api/customers`, `PUT /api/customers/:id`, `DELETE /api/customers/:id`, `GET /api/sales`, `POST /api/sales`, `POST /api/sales/:id/payments`, `POST /api/sales/:id/return`, dan `POST /api/sales/:id/cancel`.
 
+## Operasional lanjutan
+
+Toolbar **Fitur lainnya** di bagian bawah aplikasi menyediakan fitur gudang, stok opname, utang pemasok, laporan, piutang, restock, barcode, serta pelacakan batch:
+
+- **Gudang**: stok lama dimigrasikan ke Gudang Utama. Gudang tambahan memiliki saldo produk masing-masing; transfer mengurangi dan menambah gudang terkait tanpa mengubah stok total. Pilih gudang transaksi pada toolbar sebelum membuat pembelian atau penjualan.
+- **Stok opname**: catat hitung fisik per gudang. Sistem menyimpan snapshot; jika stok berubah sebelum penyelesaian, opname ditolak agar pergerakan baru tidak tertimpa. Selisih yang diterapkan masuk ke stock log.
+- **Utang pemasok dan retur**: pesanan pembelian memiliki tanggal jatuh tempo (default 30 hari). Pembayaran dapat sebagian atau lunas. Retur dibatasi pada jumlah yang diterima dan masih tersedia, mengurangi stok serta saldo utang terkait.
+- **Laporan**: ringkasan penjualan, pembayaran/refund, pembelian, produk terlaris, dan margin kotor berdasarkan harga beli yang tersimpan pada baris penjualan. Margin transaksi lama yang tidak memiliki data biaya tidak dapat dihitung. Laporan dapat diekspor ke CSV atau dicetak/disimpan ke PDF.
+- **Piutang**: daftar saldo invoice belum lunas beserta umur tagihannya.
+- **Restock**: peringatan stok rendah dan rekomendasi jumlah pemesanan berdasarkan ambang rendah produk.
+- **Barcode/QR**: barcode dapat disimpan pada produk dan dicari dengan scanner USB yang berperilaku seperti keyboard atau dengan mengetik kode. SKU juga dapat dipakai untuk pencarian.
+- **Batch/serial/kedaluwarsa**: aktifkan pada produk tertentu. Barang masuk meminta batch; penjualan mengambil batch yang kedaluwarsanya paling dekat dahulu, dan retur mengembalikan alokasi batch asal.
+
+Endpoint baru:
+
+- `GET /api/warehouses`, `POST /api/warehouses`, `GET /api/warehouses/:id/stock`, `POST /api/stock-transfers`
+- `GET /api/stocktakes`, `POST /api/stocktakes`, `POST /api/stocktakes/:id/complete`
+- `GET /api/product-batches`, `POST /api/product-batches`, `GET /api/products/lookup/:code`, `PUT /api/products/:id/metadata`
+- `POST /api/purchases/:id/payments`, `POST /api/supplier-returns`, `GET /api/receivables`, `GET /api/reports`, `GET /api/restock-recommendations`
+
 ## Autentikasi, MFA, dan reset password
 
 Alur auth bawaan:

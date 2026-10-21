@@ -19,7 +19,10 @@ CREATE INDEX IF NOT EXISTS products_created_at_idx ON products(created_at DESC);
 ALTER TABLE products ADD COLUMN IF NOT EXISTS sku VARCHAR(64);
 ALTER TABLE products ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 5 CHECK (low_stock_threshold >= 0);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode VARCHAR(120);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS track_batches BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS products_sku_idx ON products(sku) WHERE sku IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS products_barcode_idx ON products(barcode) WHERE barcode IS NOT NULL;
 CREATE INDEX IF NOT EXISTS products_deleted_at_idx ON products(deleted_at);
 
 CREATE TABLE IF NOT EXISTS stock_movements (
@@ -171,10 +174,12 @@ CREATE TABLE IF NOT EXISTS sales_order_items (
   quantity INTEGER NOT NULL CHECK (quantity > 0),
   returned_quantity INTEGER NOT NULL DEFAULT 0
     CHECK (returned_quantity >= 0 AND returned_quantity <= quantity),
-  unit_price NUMERIC(12, 2) NOT NULL CHECK (unit_price >= 0)
+  unit_price NUMERIC(12, 2) NOT NULL CHECK (unit_price >= 0),
+  unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (unit_cost >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS sales_order_items_order_idx ON sales_order_items(sales_order_id);
+ALTER TABLE sales_order_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (unit_cost >= 0);
 
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(32);
 UPDATE sales_orders SET invoice_number = 'INV-' || SUBSTRING(order_number FROM 4) WHERE invoice_number IS NULL;
@@ -194,3 +199,130 @@ CREATE TABLE IF NOT EXISTS sales_payments (
 );
 
 CREATE INDEX IF NOT EXISTS sales_payments_order_idx ON sales_payments(sales_order_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS warehouses (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(120) NOT NULL UNIQUE,
+  address TEXT,
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO warehouses (name, is_default)
+VALUES ('Gudang Utama', TRUE)
+ON CONFLICT (name) DO NOTHING;
+
+CREATE UNIQUE INDEX IF NOT EXISTS warehouses_one_default_idx ON warehouses(is_default) WHERE is_default;
+
+CREATE TABLE IF NOT EXISTS warehouse_stocks (
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+  PRIMARY KEY (warehouse_id, product_id)
+);
+
+INSERT INTO warehouse_stocks (warehouse_id, product_id, stock)
+SELECT w.id, p.id, p.stock
+FROM warehouses w CROSS JOIN products p
+WHERE w.is_default
+ON CONFLICT (warehouse_id, product_id) DO NOTHING;
+
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS warehouse_id BIGINT REFERENCES warehouses(id) ON DELETE RESTRICT;
+UPDATE purchase_orders SET warehouse_id=(SELECT id FROM warehouses WHERE is_default LIMIT 1) WHERE warehouse_id IS NULL;
+
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS warehouse_id BIGINT REFERENCES warehouses(id) ON DELETE RESTRICT;
+UPDATE sales_orders SET warehouse_id=(SELECT id FROM warehouses WHERE is_default LIMIT 1) WHERE warehouse_id IS NULL;
+
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS warehouse_id BIGINT REFERENCES warehouses(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS stock_transfers (
+  id BIGSERIAL PRIMARY KEY,
+  source_warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+  destination_warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  notes VARCHAR(500),
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (source_warehouse_id <> destination_warehouse_id)
+);
+
+CREATE TABLE IF NOT EXISTS stocktakes (
+  id BIGSERIAL PRIMARY KEY,
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+  status VARCHAR(16) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'completed')),
+  notes VARCHAR(500),
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS stocktake_items (
+  id BIGSERIAL PRIMARY KEY,
+  stocktake_id BIGINT NOT NULL REFERENCES stocktakes(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  expected_quantity INTEGER NOT NULL CHECK (expected_quantity >= 0),
+  counted_quantity INTEGER NOT NULL CHECK (counted_quantity >= 0),
+  UNIQUE (stocktake_id, product_id)
+);
+
+CREATE TABLE IF NOT EXISTS product_batches (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+  batch_number VARCHAR(120) NOT NULL,
+  serial_number VARCHAR(120),
+  expires_at DATE,
+  quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (product_id, warehouse_id, batch_number, serial_number)
+);
+
+CREATE INDEX IF NOT EXISTS product_batches_expiry_idx ON product_batches(expires_at) WHERE expires_at IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS product_batches_identity_idx ON product_batches(product_id, warehouse_id, batch_number, COALESCE(serial_number, ''));
+
+CREATE TABLE IF NOT EXISTS sales_order_item_batches (
+  sales_order_item_id BIGINT NOT NULL REFERENCES sales_order_items(id) ON DELETE CASCADE,
+  product_batch_id BIGINT NOT NULL REFERENCES product_batches(id) ON DELETE RESTRICT,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  returned_quantity INTEGER NOT NULL DEFAULT 0 CHECK (returned_quantity >= 0 AND returned_quantity <= quantity),
+  PRIMARY KEY (sales_order_item_id, product_batch_id)
+);
+
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS due_date DATE;
+
+CREATE TABLE IF NOT EXISTS purchase_payments (
+  id BIGSERIAL PRIMARY KEY,
+  purchase_order_id BIGINT NOT NULL REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  method VARCHAR(24) NOT NULL CHECK (method IN ('cash', 'bank_transfer', 'qris', 'card', 'other')),
+  reference VARCHAR(120),
+  notes VARCHAR(500),
+  recorded_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  recorded_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS supplier_returns (
+  id BIGSERIAL PRIMARY KEY,
+  supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+  purchase_order_id BIGINT REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+  status VARCHAR(16) NOT NULL DEFAULT 'completed' CHECK (status IN ('completed')),
+  reason VARCHAR(500),
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE supplier_returns ADD COLUMN IF NOT EXISTS purchase_order_id BIGINT REFERENCES purchase_orders(id) ON DELETE RESTRICT;
+
+CREATE TABLE IF NOT EXISTS supplier_return_items (
+  id BIGSERIAL PRIMARY KEY,
+  supplier_return_id BIGINT NOT NULL REFERENCES supplier_returns(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  unit_cost NUMERIC(12,2) NOT NULL CHECK (unit_cost >= 0)
+);
