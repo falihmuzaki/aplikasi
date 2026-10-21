@@ -75,6 +75,7 @@ Toolbar **Fitur lainnya** di bagian bawah aplikasi menyediakan fitur gudang, sto
 - **Biaya operasional & estimasi laba**: admin mencatat pengeluaran per kategori, metode pembayaran, dan referensi. Laporan periode menampilkan total biaya serta estimasi laba operasional (margin kotor dikurangi biaya yang dicatat); angka ini belum mencakup pajak atau biaya yang belum dimasukkan.
 - **Backup & pemulihan**: admin dapat mengunduh seluruh data aplikasi sebagai JSON atau memulihkannya dari file. Pemulihan mengganti seluruh data aktif dan meminta admin masuk kembali. File berisi data usaha serta hash kata sandi; simpan dengan akses terbatas. OTP sementara tidak dimasukkan ke backup.
 - **POS cepat**: dari menu Sales, tombol POS cepat menerima input barcode/SKU, membangun keranjang, mendukung pelanggan umum, lalu membuat invoice dan mencatat pembayaran tunai saat checkout.
+- **Kas harian**: kasir membuka satu sesi dengan saldo awal, lalu sistem mengaitkan pembayaran/refund tunai dan pengeluaran tunai ke sesi yang aktif. Saat penutupan, sistem membandingkan saldo fisik dengan saldo yang diharapkan serta menyimpan selisih. Pembayaran atau pengeluaran tunai memerlukan sesi terbuka; transaksi non-tunai tetap dapat dicatat tanpa sesi. Sesi hanya dapat ditutup oleh kasir yang membukanya.
 
 Endpoint baru:
 
@@ -83,6 +84,7 @@ Endpoint baru:
 - `GET /api/product-batches`, `POST /api/product-batches`, `GET /api/products/lookup/:code`, `PUT /api/products/:id/metadata`
 - `POST /api/purchases/:id/payments`, `POST /api/supplier-returns`, `GET /api/receivables`, `GET /api/reports`, `GET /api/restock-recommendations`
 - `GET /api/expenses`, `POST /api/expenses`, `GET /api/backup`, `POST /api/backup/restore`
+- `GET /api/cash-sessions`, `POST /api/cash-sessions/open`, `POST /api/cash-sessions/:id/close`
 
 ## Autentikasi, MFA, dan reset password
 

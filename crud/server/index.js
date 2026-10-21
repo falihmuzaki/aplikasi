@@ -20,7 +20,7 @@ app.use(express.json({ limit: '50mb' }))
 const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || 'lumina-dev-token-secret-change-me'
 const TOKEN_TTL_SECONDS = 7 * 24 * 3600
 const backupTables = [
-  'users', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
+  'users', 'cash_sessions', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
   'purchase_orders', 'purchase_order_items', 'purchase_payments', 'supplier_returns',
   'supplier_return_items', 'sales_orders', 'sales_order_items', 'product_batches',
   'sales_payments', 'sales_order_item_batches', 'warehouse_stocks', 'stock_movements',
@@ -42,75 +42,6 @@ function createRateLimiter({ windowMs, max, message }) {
       else hits.delete(key)
     }
 
-    app.get('/api/backup', requireAuth, requireAdmin, async (_request, response, next) => {
-      try {
-        const tables = {}
-        for (const table of backupTables) {
-          const result = await pool.query(`SELECT * FROM ${table}`)
-          tables[table] = result.rows.map((row) => {
-            if (table !== 'users') return row
-            const safeUser = { ...row }
-            for (const column of ['login_otp_hash', 'login_otp_expires_at', 'reset_otp_hash', 'reset_otp_expires_at', 'register_otp_hash', 'register_otp_expires_at']) delete safeUser[column]
-            return safeUser
-          })
-        }
-        response.setHeader('Content-Type', 'application/json; charset=utf-8')
-        response.setHeader('Content-Disposition', `attachment; filename="ifal-store-backup-${new Date().toISOString().slice(0, 10)}.json"`)
-        response.json({ format: 'ifal-store-backup', version: 1, createdAt: new Date().toISOString(), tables })
-      } catch (error) { next(error) }
-    })
-
-    app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, response, next) => {
-      const backup = request.body
-      if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) return response.status(400).json({ message: 'File backup tidak valid atau versinya tidak didukung.' })
-      if (backupTables.some((table) => !Array.isArray(backup.tables[table])) || Object.keys(backup.tables).some((table) => !backupTables.includes(table))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
-      const totalRows = backupTables.reduce((sum, table) => sum + backup.tables[table].length, 0)
-      if (totalRows > 300_000) return response.status(413).json({ message: 'Backup melebihi batas 300.000 baris.' })
-      for (const table of backupTables) {
-        if (backup.tables[table].some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
-      }
-
-      const client = await pool.connect()
-      try {
-        await client.query('BEGIN')
-        await client.query(`LOCK TABLE ${backupTables.join(', ')} IN ACCESS EXCLUSIVE MODE`)
-        const columnResults = await client.query(
-          `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name = ANY($1::text[])`,
-          [backupTables],
-        )
-        const columnsByTable = new Map(backupTables.map((table) => [table, new Set()]))
-        for (const column of columnResults.rows) columnsByTable.get(column.table_name)?.add(column.column_name)
-        for (const table of backupTables) {
-          const allowedColumns = columnsByTable.get(table)
-          if (!allowedColumns?.size || backup.tables[table].some((row) => Object.keys(row).some((key) => !allowedColumns.has(key)))) throw new Error(`Kolom backup tabel ${table} tidak sesuai.`)
-        }
-
-        for (const table of [...backupTables].reverse()) await client.query(`DELETE FROM ${table}`)
-        for (const table of backupTables) {
-          const columns = [...columnsByTable.get(table)]
-          for (const row of backup.tables[table]) {
-            const presentColumns = columns.filter((column) => Object.hasOwn(row, column))
-            if (!presentColumns.length) continue
-            const placeholders = presentColumns.map((_, index) => `$${index + 1}`).join(', ')
-            await client.query(
-              `INSERT INTO ${table} (${presentColumns.join(', ')}) VALUES (${placeholders})`,
-              presentColumns.map((column) => row[column]),
-            )
-          }
-          if (columnsByTable.get(table).has('id')) {
-            await client.query(
-              `SELECT setval(pg_get_serial_sequence($1, 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM ${table}`,
-              [table],
-            )
-          }
-        }
-        await client.query('COMMIT')
-        response.json({ message: `Pemulihan selesai. ${totalRows} baris data berhasil dipulihkan.` })
-      } catch (error) {
-        await client.query('ROLLBACK').catch(() => {})
-        next(error)
-      } finally { client.release() }
-    })
   }, windowMs)
   sweep.unref?.()
 
@@ -420,6 +351,84 @@ async function requireAdmin(request, response, next) {
     next()
   } catch (error) { next(error) }
 }
+
+async function lockOpenCashSession(client, userId) {
+  const result = await client.query(
+    "SELECT id FROM cash_sessions WHERE opened_by=$1 AND status='open' FOR UPDATE",
+    [userId],
+  )
+  return result.rows[0] || null
+}
+
+app.get('/api/backup', requireAuth, requireAdmin, async (_request, response, next) => {
+  try {
+    const tables = {}
+    for (const table of backupTables) {
+      const result = await pool.query(`SELECT * FROM ${table}`)
+      tables[table] = result.rows.map((row) => {
+        if (table !== 'users') return row
+        const safeUser = { ...row }
+        for (const column of ['login_otp_hash', 'login_otp_expires_at', 'reset_otp_hash', 'reset_otp_expires_at', 'register_otp_hash', 'register_otp_expires_at']) delete safeUser[column]
+        return safeUser
+      })
+    }
+    response.setHeader('Content-Type', 'application/json; charset=utf-8')
+    response.setHeader('Content-Disposition', `attachment; filename="ifal-store-backup-${new Date().toISOString().slice(0, 10)}.json"`)
+    response.json({ format: 'ifal-store-backup', version: 1, createdAt: new Date().toISOString(), tables })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, response, next) => {
+  const backup = request.body
+  if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) return response.status(400).json({ message: 'File backup tidak valid atau versinya tidak didukung.' })
+  if (backupTables.some((table) => !Array.isArray(backup.tables[table])) || Object.keys(backup.tables).some((table) => !backupTables.includes(table))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
+  const totalRows = backupTables.reduce((sum, table) => sum + backup.tables[table].length, 0)
+  if (totalRows > 300_000) return response.status(413).json({ message: 'Backup melebihi batas 300.000 baris.' })
+  for (const table of backupTables) {
+    if (backup.tables[table].some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(`LOCK TABLE ${backupTables.join(', ')} IN ACCESS EXCLUSIVE MODE`)
+    const columnResults = await client.query(
+      `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name = ANY($1::text[])`,
+      [backupTables],
+    )
+    const columnsByTable = new Map(backupTables.map((table) => [table, new Set()]))
+    for (const column of columnResults.rows) columnsByTable.get(column.table_name)?.add(column.column_name)
+    for (const table of backupTables) {
+      const allowedColumns = columnsByTable.get(table)
+      if (!allowedColumns?.size || backup.tables[table].some((row) => Object.keys(row).some((key) => !allowedColumns.has(key)))) throw new Error(`Kolom backup tabel ${table} tidak sesuai.`)
+    }
+
+    for (const table of [...backupTables].reverse()) await client.query(`DELETE FROM ${table}`)
+    for (const table of backupTables) {
+      const columns = [...columnsByTable.get(table)]
+      for (const row of backup.tables[table]) {
+        const presentColumns = columns.filter((column) => Object.hasOwn(row, column))
+        if (!presentColumns.length) continue
+        const placeholders = presentColumns.map((_, index) => `$${index + 1}`).join(', ')
+        await client.query(
+          `INSERT INTO ${table} (${presentColumns.join(', ')}) VALUES (${placeholders})`,
+          presentColumns.map((column) => row[column]),
+        )
+      }
+      if (columnsByTable.get(table).has('id')) {
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence($1, 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM ${table}`,
+          [table],
+        )
+      }
+    }
+    await client.query('COMMIT')
+    response.json({ message: `Pemulihan selesai. ${totalRows} baris data berhasil dipulihkan.` })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
 
 app.get('/api/health', async (_request, response) => {
   const result = await pool.query('SELECT NOW() AS now')
@@ -858,22 +867,120 @@ app.get('/api/expenses', requireAuth, requireAdmin, async (request, response, ne
 })
 
 app.post('/api/expenses', requireAuth, requireAdmin, async (request, response, next) => {
+  const { description, category, amount, paymentMethod = 'cash', reference = '', notes = '' } = request.body || {}
+  const cleanDescription = String(description || '').trim()
+  const cleanCategory = String(category || '').trim()
+  const numericAmount = Number(amount)
+  if (!cleanDescription || cleanDescription.length > 200 || !cleanCategory || cleanCategory.length > 80 || !Number.isFinite(numericAmount) || numericAmount <= 0 || numericAmount > 9_999_999_999.99) return response.status(400).json({ message: 'Deskripsi, kategori, dan jumlah biaya harus valid.' })
+  if (!['cash', 'bank_transfer', 'qris', 'card', 'other'].includes(paymentMethod)) return response.status(400).json({ message: 'Metode pembayaran tidak valid.' })
+  if (String(reference).length > 120 || String(notes).length > 500) return response.status(400).json({ message: 'Referensi maksimal 120 dan catatan maksimal 500 karakter.' })
+  const client = await pool.connect()
   try {
-    const { description, category, amount, paymentMethod = 'cash', reference = '', notes = '' } = request.body || {}
-    const cleanDescription = String(description || '').trim()
-    const cleanCategory = String(category || '').trim()
-    const numericAmount = Number(amount)
-    if (!cleanDescription || cleanDescription.length > 200 || !cleanCategory || cleanCategory.length > 80 || !Number.isFinite(numericAmount) || numericAmount <= 0 || numericAmount > 9_999_999_999.99) return response.status(400).json({ message: 'Deskripsi, kategori, dan jumlah biaya harus valid.' })
-    if (!['cash', 'bank_transfer', 'qris', 'card', 'other'].includes(paymentMethod)) return response.status(400).json({ message: 'Metode pembayaran tidak valid.' })
-    if (String(reference).length > 120 || String(notes).length > 500) return response.status(400).json({ message: 'Referensi maksimal 120 dan catatan maksimal 500 karakter.' })
-    const user = await pool.query('SELECT name FROM users WHERE id=$1', [request.userId])
-    const result = await pool.query(`
-      INSERT INTO operating_expenses (description, category, amount, payment_method, reference, notes, recorded_by, recorded_by_name)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
-    `, [cleanDescription, cleanCategory, numericAmount, paymentMethod, String(reference).trim() || null, String(notes).trim() || null, request.userId, user.rows[0]?.name || null])
+    await client.query('BEGIN')
+    let cashSession = null
+    if (paymentMethod === 'cash') {
+      cashSession = await lockOpenCashSession(client, request.userId)
+      if (!cashSession) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Buka sesi kas terlebih dahulu untuk mencatat pengeluaran tunai.' })
+      }
+    }
+    const user = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const result = await client.query(`
+      INSERT INTO operating_expenses (description, category, amount, payment_method, reference, notes, recorded_by, recorded_by_name, cash_session_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
+    `, [cleanDescription, cleanCategory, numericAmount, paymentMethod, String(reference).trim() || null, String(notes).trim() || null, request.userId, user.rows[0]?.name || null, cashSession?.id || null])
+    await client.query('COMMIT')
     const row = result.rows[0]
     response.status(201).json({ id: Number(row.id), description: row.description, category: row.category, amount: Number(row.amount), paymentMethod: row.payment_method, reference: row.reference, notes: row.notes, recordedByName: row.recorded_by_name, createdAt: row.created_at })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.get('/api/cash-sessions', requireAuth, async (request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT cs.*,
+        COALESCE((SELECT SUM(amount) FROM sales_payments WHERE cash_session_id=cs.id AND kind='payment' AND method='cash'),0)::numeric AS cash_received,
+        COALESCE((SELECT SUM(amount) FROM sales_payments WHERE cash_session_id=cs.id AND kind='refund' AND method='cash'),0)::numeric AS cash_refunded,
+        COALESCE((SELECT SUM(amount) FROM operating_expenses WHERE cash_session_id=cs.id AND payment_method='cash'),0)::numeric AS cash_expenses,
+        cs.opening_amount
+          + COALESCE((SELECT SUM(amount) FROM sales_payments WHERE cash_session_id=cs.id AND kind='payment' AND method='cash'),0)
+          - COALESCE((SELECT SUM(amount) FROM sales_payments WHERE cash_session_id=cs.id AND kind='refund' AND method='cash'),0)
+          - COALESCE((SELECT SUM(amount) FROM operating_expenses WHERE cash_session_id=cs.id AND payment_method='cash'),0) AS calculated_expected
+      FROM cash_sessions cs
+      WHERE cs.opened_by=$1
+      ORDER BY cs.opened_at DESC, cs.id DESC
+      LIMIT 100
+    `, [request.userId])
+    const sessions = result.rows.map((row) => ({
+      id: Number(row.id), status: row.status, openingAmount: Number(row.opening_amount),
+      closingAmount: row.closing_amount === null ? null : Number(row.closing_amount),
+      expectedAmount: row.status === 'open' ? Number(row.calculated_expected) : Number(row.expected_amount),
+      differenceAmount: row.difference_amount === null ? null : Number(row.difference_amount),
+      cashReceived: Number(row.cash_received), cashRefunded: Number(row.cash_refunded),
+      cashExpenses: Number(row.cash_expenses), openedByName: row.opened_by_name,
+      closedByName: row.closed_by_name, openedAt: row.opened_at, closedAt: row.closed_at,
+    }))
+    response.json({ activeSession: sessions.find((session) => session.status === 'open') || null, history: sessions.filter((session) => session.status === 'closed') })
   } catch (error) { next(error) }
+})
+
+app.post('/api/cash-sessions/open', requireAuth, async (request, response, next) => {
+  const openingText = String(request.body?.openingAmount ?? '')
+  const openingAmount = Number(openingText)
+  if (!/^\d{1,10}(\.\d{1,2})?$/.test(openingText) || !Number.isFinite(openingAmount) || openingAmount > 9_999_999_999.99) return response.status(400).json({ message: 'Saldo awal harus angka valid minimal 0 dengan maksimal 2 desimal.' })
+  try {
+    const user = await pool.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const result = await pool.query(`
+      INSERT INTO cash_sessions (opening_amount, opened_by, opened_by_name)
+      VALUES ($1,$2,$3) RETURNING *
+    `, [openingAmount, request.userId, user.rows[0]?.name || null])
+    response.status(201).json({ id: Number(result.rows[0].id), status: 'open', openingAmount, expectedAmount: openingAmount, cashReceived: 0, cashRefunded: 0, cashExpenses: 0, openedByName: result.rows[0].opened_by_name, openedAt: result.rows[0].opened_at })
+  } catch (error) {
+    if (error.code === '23505') return response.status(409).json({ message: 'Sesi kas Anda masih terbuka. Tutup sesi tersebut sebelum membuka sesi baru.' })
+    next(error)
+  }
+})
+
+app.post('/api/cash-sessions/:id/close', requireAuth, async (request, response, next) => {
+  const closingText = String(request.body?.closingAmount ?? '')
+  const closingAmount = Number(closingText)
+  if (!/^\d{1,10}(\.\d{1,2})?$/.test(closingText) || !Number.isFinite(closingAmount) || closingAmount > 9_999_999_999.99) return response.status(400).json({ message: 'Saldo fisik harus angka valid minimal 0 dengan maksimal 2 desimal.' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const sessionResult = await client.query("SELECT * FROM cash_sessions WHERE id=$1 AND opened_by=$2 AND status='open' FOR UPDATE", [request.params.id, request.userId])
+    if (!sessionResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Sesi kas aktif tidak ditemukan.' })
+    }
+    const session = sessionResult.rows[0]
+    const totals = await client.query(`
+      SELECT
+        COALESCE((SELECT SUM(amount) FROM sales_payments WHERE cash_session_id=$1 AND kind='payment' AND method='cash'),0)::numeric AS cash_received,
+        COALESCE((SELECT SUM(amount) FROM sales_payments WHERE cash_session_id=$1 AND kind='refund' AND method='cash'),0)::numeric AS cash_refunded,
+        COALESCE((SELECT SUM(amount) FROM operating_expenses WHERE cash_session_id=$1 AND payment_method='cash'),0)::numeric AS cash_expenses
+    `, [session.id])
+    const cashReceived = Number(totals.rows[0].cash_received)
+    const cashRefunded = Number(totals.rows[0].cash_refunded)
+    const cashExpenses = Number(totals.rows[0].cash_expenses)
+    const expectedAmount = Math.round((Number(session.opening_amount) + cashReceived - cashRefunded - cashExpenses) * 100) / 100
+    const differenceAmount = Math.round((closingAmount - expectedAmount) * 100) / 100
+    const user = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const result = await client.query(`
+      UPDATE cash_sessions
+      SET status='closed', closing_amount=$1, expected_amount=$2, difference_amount=$3, closed_by=$4, closed_by_name=$5, closed_at=NOW()
+      WHERE id=$6 RETURNING *
+    `, [closingAmount, expectedAmount, differenceAmount, request.userId, user.rows[0]?.name || null, session.id])
+    await client.query('COMMIT')
+    response.json({ id: Number(result.rows[0].id), status: 'closed', openingAmount: Number(session.opening_amount), closingAmount, expectedAmount, differenceAmount, cashReceived, cashRefunded, cashExpenses, openedByName: session.opened_by_name, closedByName: result.rows[0].closed_by_name, openedAt: session.opened_at, closedAt: result.rows[0].closed_at })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
 })
 
 app.get('/api/stats', requireAuth, async (_request, response, next) => {
@@ -1615,6 +1722,7 @@ app.get('/api/receivables', requireAuth, async (_request, response, next) => {
 
 app.post('/api/sales', requireAuth, async (request, response, next) => {
   const { customerId, items, notes = '' } = request.body || {}
+  const checkoutPaymentMethod = request.body?.checkoutPaymentMethod || null
   const requestedWarehouseId = Number(request.body?.warehouseId || 0)
   const normalizedCustomerId = customerId === null || customerId === undefined || customerId === '' ? null : Number(customerId)
   if (normalizedCustomerId !== null && (!Number.isSafeInteger(normalizedCustomerId) || normalizedCustomerId < 1)) return response.status(400).json({ message: 'Pelanggan tidak valid.' })
@@ -1628,10 +1736,16 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
   }
   if (new Set(normalizedItems.map((item) => item.productId)).size !== normalizedItems.length) return response.status(400).json({ message: 'Produk yang sama tidak boleh ditambahkan lebih dari sekali.' })
   if (String(notes).length > 2000) return response.status(400).json({ message: 'Catatan maksimal 2.000 karakter.' })
+  if (checkoutPaymentMethod !== null && checkoutPaymentMethod !== 'cash') return response.status(400).json({ message: 'Metode pembayaran checkout tidak valid.' })
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    const cashSession = checkoutPaymentMethod === 'cash' ? await lockOpenCashSession(client, request.userId) : null
+    if (checkoutPaymentMethod === 'cash' && !cashSession) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Buka sesi kas harian sebelum checkout POS tunai.' })
+    }
     const customerResult = normalizedCustomerId === null
       ? { rows: [{ id: null, name: 'Pelanggan umum', email: null, phone: null }], rowCount: 1 }
       : await client.query(`SELECT ${customerFields} FROM customers WHERE id=$1 FOR SHARE`, [normalizedCustomerId])
@@ -1659,6 +1773,7 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     const invoiceNumber = orderNumber.replace(/^SO-/, 'INV-')
     await client.query('UPDATE sales_orders SET order_number=$1, invoice_number=$2 WHERE id=$3', [orderNumber, invoiceNumber, order.id])
 
+    let checkoutTotal = 0
     for (const item of normalizedItems.sort((a, b) => a.productId - b.productId)) {
       const productResult = await client.query(
         `SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches,
@@ -1672,6 +1787,7 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
         return response.status(400).json({ message: `Produk dengan ID ${item.productId} tidak ditemukan atau sudah diarsipkan.` })
       }
       const product = productResult.rows[0]
+      checkoutTotal += Number(product.price) * item.quantity
       const warehouseStockResult = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [warehouseId, product.id])
       const warehouseStock = warehouseStockResult.rows[0]?.stock || 0
       if (item.quantity > warehouseStock) {
@@ -1708,6 +1824,12 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
         [product.id, warehouseId, request.userId, userResult.rows[0]?.name ?? null, -item.quantity, warehouseStock, warehouseStockAfter, `Sale ${orderNumber}`],
       )
     }
+    if (checkoutPaymentMethod === 'cash') {
+      await client.query(
+        "INSERT INTO sales_payments (sales_order_id, kind, amount, method, notes, recorded_by, recorded_by_name, cash_session_id) VALUES ($1,'payment',$2,'cash','POS checkout',$3,$4,$5)",
+        [order.id, checkoutTotal, request.userId, userResult.rows[0]?.name || null, cashSession.id],
+      )
+    }
     await client.query('COMMIT')
     response.status(201).json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
   } catch (error) {
@@ -1732,6 +1854,14 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    let cashSession = null
+    if (method === 'cash') {
+      cashSession = await lockOpenCashSession(client, request.userId)
+      if (!cashSession) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Buka sesi kas harian sebelum mencatat pembayaran atau refund tunai.' })
+      }
+    }
     const orderResult = await client.query('SELECT id, status FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
     if (!orderResult.rowCount) {
       await client.query('ROLLBACK')
@@ -1773,8 +1903,8 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
     }
     const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
     await client.query(
-      'INSERT INTO sales_payments (sales_order_id, kind, amount, method, reference, notes, recorded_by, recorded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-      [order.id, kind, amountValue, method, String(reference).trim() || null, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null],
+      'INSERT INTO sales_payments (sales_order_id, kind, amount, method, reference, notes, recorded_by, recorded_by_name, cash_session_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [order.id, kind, amountValue, method, String(reference).trim() || null, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null, cashSession?.id || null],
     )
     await client.query('COMMIT')
     response.json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])

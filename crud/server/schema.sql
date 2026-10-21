@@ -341,3 +341,26 @@ CREATE TABLE IF NOT EXISTS operating_expenses (
 );
 
 CREATE INDEX IF NOT EXISTS operating_expenses_created_at_idx ON operating_expenses(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS cash_sessions (
+  id BIGSERIAL PRIMARY KEY,
+  status VARCHAR(12) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+  opening_amount NUMERIC(12,2) NOT NULL CHECK (opening_amount >= 0),
+  closing_amount NUMERIC(12,2) CHECK (closing_amount >= 0),
+  expected_amount NUMERIC(12,2),
+  difference_amount NUMERIC(12,2),
+  opened_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  opened_by_name VARCHAR(120),
+  closed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  closed_by_name VARCHAR(120),
+  opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  closed_at TIMESTAMPTZ,
+  CHECK ((status = 'open' AND closed_at IS NULL) OR (status = 'closed' AND closed_at IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS cash_sessions_one_open_per_user_idx ON cash_sessions(opened_by) WHERE status = 'open' AND opened_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS cash_sessions_opened_at_idx ON cash_sessions(opened_at DESC);
+
+ALTER TABLE sales_payments ADD COLUMN IF NOT EXISTS cash_session_id BIGINT REFERENCES cash_sessions(id) ON DELETE SET NULL;
+ALTER TABLE operating_expenses ADD COLUMN IF NOT EXISTS cash_session_id BIGINT REFERENCES cash_sessions(id) ON DELETE SET NULL;
+ALTER TABLE cash_sessions ADD COLUMN IF NOT EXISTS difference_amount NUMERIC(12,2);

@@ -128,6 +128,12 @@ export function ExpensesView() {
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [cashSessionOpen, setCashSessionOpen] = useState(false)
+  useEffect(() => {
+    let active = true
+    api('/cash-sessions').then((result) => { if (active) setCashSessionOpen(Boolean(result.activeSession)) }).catch((cause) => { if (active) setError(cause.message) })
+    return () => { active = false }
+  }, [])
   useEffect(() => {
     let active = true
     api(`/expenses?from=${from}&to=${to}`).then((result) => { if (active) { setExpenses(result); setError('') } }).catch((cause) => { if (active) setError(cause.message) })
@@ -140,6 +146,7 @@ export function ExpensesView() {
       await api('/expenses', { method: 'POST', body: JSON.stringify({ ...form, amount: Number(form.amount) }) })
       setForm({ description: '', category: 'Operasional', amount: '', paymentMethod: 'cash', reference: '', notes: '' })
       setRefresh((value) => value + 1)
+      if (form.paymentMethod === 'cash') window.dispatchEvent(new Event('cash-session-updated'))
       setError('')
     } catch (cause) { setError(cause.message) } finally { setSaving(false) }
   }
@@ -148,8 +155,52 @@ export function ExpensesView() {
   return <>
     <header className="topbar"><div><p className="breadcrumb">Finance / <span>Expenses</span></p><h1>Biaya operasional & kas</h1></div><button className="filter-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></header>
     <section className="welcome-row"><div><p className="muted">Total biaya pada periode ini</p><h2>{idr(total)}</h2><p className="muted">{expenses.length} transaksi terbaru pada periode yang dipilih.</p></div></section>
-    <section className="catalog-panel"><div className="panel-heading"><div><h2>Catat biaya</h2><p className="muted">Catat biaya usaha agar estimasi laba operasional lebih akurat.</p></div></div>{error && <p className="login-error">{error}</p>}<form className="toolbar expense-form" onSubmit={save}><label>Deskripsi<input required maxLength="200" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Contoh: listrik toko" /></label><label>Kategori<input required maxLength="80" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><label>Jumlah (Rp)<input required type="number" min="0.01" step="0.01" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} /></label><label>Metode<select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="card">Kartu</option><option value="other">Lainnya</option></select></label><label>Referensi<input maxLength="120" value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} /></label><label>Catatan<input maxLength="500" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><button className="primary-button" disabled={saving}>{saving ? 'Menyimpan...' : 'Catat biaya'}</button></form></section>
+    <section className="catalog-panel"><div className="panel-heading"><div><h2>Catat biaya</h2><p className="muted">Catat biaya usaha agar estimasi laba operasional lebih akurat.</p></div></div>{error && <p className="login-error">{error}</p>}{!cashSessionOpen && <p className="muted cash-session-hint">Untuk pengeluaran tunai, buka sesi kas harian terlebih dahulu.</p>}<form className="toolbar expense-form" onSubmit={save}><label>Deskripsi<input required maxLength="200" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Contoh: listrik toko" /></label><label>Kategori<input required maxLength="80" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><label>Jumlah (Rp)<input required type="number" min="0.01" step="0.01" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} /></label><label>Metode<select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option value="cash" disabled={!cashSessionOpen}>Tunai{cashSessionOpen ? '' : ' (buka sesi kas)'}</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="card">Kartu</option><option value="other">Lainnya</option></select></label><label>Referensi<input maxLength="120" value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} /></label><label>Catatan<input maxLength="500" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><button className="primary-button" disabled={saving}>{saving ? 'Menyimpan...' : 'Catat biaya'}</button></form></section>
     <section className="catalog-panel"><div className="panel-heading"><div><h2>Riwayat biaya</h2></div></div><div className="toolbar"><label>Dari<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Sampai<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Deskripsi</th><th>Kategori</th><th>Metode</th><th>Referensi</th><th>Dicatat oleh</th><th>Jumlah</th></tr></thead><tbody>{expenses.map((item) => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleDateString('id-ID')}</td><td>{item.description}</td><td>{item.category}</td><td>{paymentNames[item.paymentMethod] || item.paymentMethod}</td><td>{item.reference || '—'}</td><td>{item.recordedByName || '—'}</td><td className="price">{idr(item.amount)}</td></tr>)}{!expenses.length && <tr><td colSpan="7" className="empty-state">Belum ada biaya pada periode ini.</td></tr>}</tbody></table></div></section>
+  </>
+}
+
+export function CashSessionView({ onRefresh, onToast }) {
+  const [refresh, setRefresh] = useState(0)
+  const [data, , error] = useLoad('/cash-sessions', refresh)
+  const [openingAmount, setOpeningAmount] = useState('0')
+  const [closingAmount, setClosingAmount] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [actionError, setActionError] = useState('')
+  const active = data.activeSession
+  const history = data.history || []
+  const open = async (event) => {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      const result = await api('/cash-sessions/open', { method: 'POST', body: JSON.stringify({ openingAmount: Number(openingAmount) }) })
+      setClosingAmount('')
+      setRefresh((value) => value + 1)
+      onRefresh()
+      window.dispatchEvent(new Event('cash-session-updated'))
+      setActionError('')
+      onToast(`Sesi kas dibuka. Saldo awal ${idr(result.openingAmount)}.`)
+    } catch (cause) { setActionError(cause.message || 'Gagal membuka sesi kas.') } finally { setSaving(false) }
+  }
+  const close = async (event) => {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      const result = await api(`/cash-sessions/${active.id}/close`, { method: 'POST', body: JSON.stringify({ closingAmount: Number(closingAmount) }) })
+      setClosingAmount('')
+      setRefresh((value) => value + 1)
+      onRefresh()
+      window.dispatchEvent(new Event('cash-session-updated'))
+      setActionError('')
+      onToast(`Sesi ditutup. Selisih kas ${idr(result.differenceAmount)}.`)
+    } catch (cause) { setActionError(cause.message || 'Gagal menutup sesi kas.') } finally { setSaving(false) }
+  }
+  return <>
+    <header className="topbar"><div><p className="breadcrumb">Finance / <span>Cash session</span></p><h1>Penutupan kas harian</h1></div><button className="filter-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></header>
+    {(error || actionError) && <p className="login-error">{actionError || error}</p>}
+    {active ? <section className="catalog-panel"><div className="panel-heading"><div><h2>Sesi kas sedang berjalan</h2><p className="muted">Dibuka {new Date(active.openedAt).toLocaleString('id-ID')} oleh {active.openedByName || '—'}.</p></div><span className="purchase-status received">Terbuka</span></div><div className="stats-grid cash-summary"><div className="stat-card"><span>Saldo awal</span><strong>{idr(active.openingAmount)}</strong></div><div className="stat-card"><span>Penjualan tunai</span><strong>{idr(active.cashReceived)}</strong></div><div className="stat-card"><span>Refund tunai</span><strong>{idr(active.cashRefunded)}</strong></div><div className="stat-card"><span>Pengeluaran tunai</span><strong>{idr(active.cashExpenses)}</strong></div><div className="stat-card"><span>Kas yang diharapkan</span><strong>{idr(active.expectedAmount)}</strong></div></div><form className="toolbar cash-close-form" onSubmit={close}><label>Hitung uang fisik (Rp)<input autoFocus required type="number" min="0" max="9999999999.99" step="0.01" value={closingAmount} onChange={(event) => setClosingAmount(event.target.value)} placeholder="Masukkan hasil hitung kas" /></label><button className="primary-button" disabled={saving || closingAmount === ''}>{saving ? 'Memproses...' : 'Tutup sesi & rekonsiliasi'}</button></form></section>
+      : <section className="catalog-panel"><div className="panel-heading"><div><h2>Belum ada sesi kas terbuka</h2><p className="muted">Buka sesi dengan saldo awal sebelum menerima pembayaran tunai di POS atau mencatat pengeluaran tunai.</p></div></div><form className="toolbar cash-open-form" onSubmit={open}><label>Saldo awal kas (Rp)<input required type="number" min="0" max="9999999999.99" step="0.01" value={openingAmount} onChange={(event) => setOpeningAmount(event.target.value)} /></label><button className="primary-button" disabled={saving}>{saving ? 'Memproses...' : 'Buka sesi kas'}</button></form></section>}
+    <section className="catalog-panel"><div className="panel-heading"><div><h2>Riwayat sesi kas</h2><p className="muted">Riwayat sesi Anda, maksimal 100 sesi terakhir.</p></div></div><div className="table-wrap"><table><thead><tr><th>Dibuka</th><th>Ditutup</th><th>Saldo awal</th><th>Kas diharapkan</th><th>Kas fisik</th><th>Selisih</th><th>Kasir</th></tr></thead><tbody>{history.map((session) => <tr key={session.id}><td>{new Date(session.openedAt).toLocaleString('id-ID')}</td><td>{session.closedAt ? new Date(session.closedAt).toLocaleString('id-ID') : '—'}</td><td>{idr(session.openingAmount)}</td><td>{idr(session.expectedAmount)}</td><td>{idr(session.closingAmount)}</td><td className={session.differenceAmount === 0 ? 'delta-up' : 'delta-down'}>{idr(session.differenceAmount)}</td><td>{session.closedByName || session.openedByName || '—'}</td></tr>)}{!history.length && <tr><td colSpan="7" className="empty-state">Belum ada sesi kas yang ditutup.</td></tr>}</tbody></table></div></section>
   </>
 }
 
