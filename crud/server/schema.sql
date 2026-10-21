@@ -82,3 +82,94 @@ ON CONFLICT (name) DO NOTHING;
 INSERT INTO categories (name)
 SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category <> ''
 ON CONFLICT (name) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS suppliers (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(160) NOT NULL,
+  contact_name VARCHAR(120),
+  email VARCHAR(255),
+  phone VARCHAR(40),
+  address TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS suppliers_name_idx ON suppliers(name);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id BIGSERIAL PRIMARY KEY,
+  order_number VARCHAR(32) UNIQUE,
+  supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+  supplier_name VARCHAR(160) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'ordered'
+    CHECK (status IN ('ordered', 'partially_received', 'received')),
+  notes TEXT,
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS purchase_orders_created_at_idx ON purchase_orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS purchase_orders_supplier_idx ON purchase_orders(supplier_id);
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+  id BIGSERIAL PRIMARY KEY,
+  purchase_order_id BIGINT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  product_name VARCHAR(160) NOT NULL,
+  sku VARCHAR(64),
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  received_quantity INTEGER NOT NULL DEFAULT 0
+    CHECK (received_quantity >= 0 AND received_quantity <= quantity),
+  unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (unit_cost >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS purchase_order_items_order_idx ON purchase_order_items(purchase_order_id);
+
+CREATE TABLE IF NOT EXISTS customers (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(160) NOT NULL,
+  email VARCHAR(255),
+  phone VARCHAR(40),
+  address TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS customers_name_idx ON customers(name);
+
+CREATE TABLE IF NOT EXISTS sales_orders (
+  id BIGSERIAL PRIMARY KEY,
+  order_number VARCHAR(32) UNIQUE,
+  customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL,
+  customer_name VARCHAR(160) NOT NULL,
+  customer_email VARCHAR(255),
+  customer_phone VARCHAR(40),
+  status VARCHAR(24) NOT NULL DEFAULT 'confirmed'
+    CHECK (status IN ('confirmed', 'partially_returned', 'returned', 'cancelled')),
+  notes TEXT,
+  created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS sales_orders_created_at_idx ON sales_orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS sales_orders_customer_idx ON sales_orders(customer_id);
+
+CREATE TABLE IF NOT EXISTS sales_order_items (
+  id BIGSERIAL PRIMARY KEY,
+  sales_order_id BIGINT NOT NULL REFERENCES sales_orders(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  product_name VARCHAR(160) NOT NULL,
+  sku VARCHAR(64),
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  returned_quantity INTEGER NOT NULL DEFAULT 0
+    CHECK (returned_quantity >= 0 AND returned_quantity <= quantity),
+  unit_price NUMERIC(12, 2) NOT NULL CHECK (unit_price >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS sales_order_items_order_idx ON sales_order_items(sales_order_id);

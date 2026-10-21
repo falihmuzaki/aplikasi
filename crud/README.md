@@ -16,7 +16,7 @@ AUTH_TOKEN_SECRET=isi-dengan-nilai-acak-panjang
 
 `AUTH_TOKEN_SECRET` dipakai untuk menandatangani token login. Di development boleh dikosongkan karena ada fallback di kode, tapi di production wajib diisi nilai acak yang panjang.
 
-Saat server API dijalankan, tabel `products`, `users`, kolom auth/MFA, dan index-nya dibuat otomatis dari `server/schema.sql`.
+Saat server API dijalankan, tabel `products`, `users`, `categories`, `suppliers`, pesanan pembelian, kolom auth/MFA, dan index dibuat otomatis dari `server/schema.sql`.
 
 ## Menjalankan aplikasi
 
@@ -39,6 +39,17 @@ Buka http://localhost:5173 dan login dengan akun demo:
 
 Jika PostgreSQL belum aktif, dashboard tetap berjalan dalam local mode. Jika API aktif, operasi tambah, edit, hapus, dan pemuatan data menggunakan PostgreSQL.
 
+## Pemasok dan pesanan pembelian
+
+Menu **Suppliers** menyimpan nama pemasok dan informasi kontak; admin dapat menambah, mengubah, dan menghapus pemasok. Pemasok yang sudah dipakai di pesanan pembelian tidak dapat dihapus.
+
+Menu **Purchases** membuat pesanan pembelian berisi pemasok, produk, jumlah, dan harga beli per unit. Pesanan dapat diterima sekaligus atau sebagian. Setiap penerimaan menambah stok produk dan membuat catatan pada **Stock log**; status pesanan berubah dari *Dipesan* ke *Diterima sebagian* lalu *Diterima*. Admin maupun staff yang sudah login dapat membuat pesanan dan mencatat penerimaan.
+
+Tabel `suppliers`, `purchase_orders`, dan `purchase_order_items` dibuat otomatis saat server API dijalankan. Endpoint API menggunakan token login:
+
+- `GET /api/suppliers`, `POST /api/suppliers`, `PUT /api/suppliers/:id`, `DELETE /api/suppliers/:id`
+- `GET /api/purchases`, `POST /api/purchases`, `POST /api/purchases/:id/receive`
+
 ## Autentikasi, MFA, dan reset password
 
 Alur auth bawaan:
@@ -58,18 +69,18 @@ Ada dua mode, tergantung konfigurasi `MAIL_*` di `.env`:
 
 Untuk Gmail, isi `MAIL_USERNAME`/`MAIL_PASSWORD` dengan App Password (bukan password akun biasa).
 
-Token login dikirim frontend sebagai header `Authorization: Bearer <token>`. Endpoint `GET /api/products`, `GET /api/users`, dan seluruh perubahan `/api/users` membutuhkan token tersebut.
+Token login dikirim frontend sebagai header `Authorization: Bearer <token>`. Endpoint produk, pemasok, dan pembelian serta perubahan users membutuhkan token tersebut.
 
 ## Hak akses (privilege)
 
 Model privilege bawaan berbasis kolom `role` pada tabel `users` (`admin` atau `staff`):
 
-- **Admin**: dapat mengelola **users** (lihat/tambah/edit/hapus) sekaligus **products**.
-- **Staff**: hanya dapat mengakses **products**. Staff **tidak bisa** membuka manajemen users.
+- **Admin**: dapat mengelola **users** dan **suppliers** (lihat/tambah/edit/hapus).
+- **Staff**: dapat mengakses **products**, melihat **suppliers**, serta membuat pesanan dan mencatat penerimaan stok. Staff **tidak bisa** mengelola users atau mengubah data suppliers.
 
 Penegakan di dua lapis:
 
 - **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`.
 - **Frontend**: menu dan tampilan **Users** disembunyikan untuk staff, dan aplikasi tidak memanggil `GET /api/users` untuk staff. Staff diarahkan ke tampilan products secara default.
 
-Route products tidak berubah: admin dan staff sama-sama dapat melihat dan mengubah products.
+Admin dan staff sama-sama dapat melihat/mengubah products serta mengelola alur purchase orders. Penerimaan pembelian menambah stok dan dicatat pada stock log.

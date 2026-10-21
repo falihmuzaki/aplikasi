@@ -78,6 +78,73 @@ function normalizeCategory(row) {
   return { id: Number(row.id), name: row.name, createdAt: row.created_at, updatedAt: row.updated_at }
 }
 
+function normalizeSupplier(row) {
+  return {
+    id: Number(row.id),
+    name: row.name,
+    contactName: row.contact_name,
+    email: row.email,
+    phone: row.phone,
+    address: row.address,
+    notes: row.notes,
+    purchaseCount: Number(row.purchase_count || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function normalizePurchaseOrder(row) {
+  return {
+    id: Number(row.id),
+    orderNumber: row.order_number,
+    supplierId: Number(row.supplier_id),
+    supplierName: row.supplier_name,
+    status: row.status,
+    notes: row.notes,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    items: row.items || [],
+  }
+}
+
+function normalizeCustomer(row) {
+  return {
+    id: Number(row.id),
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    address: row.address,
+    notes: row.notes,
+    orderCount: Number(row.order_count || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function normalizeSalesOrder(row) {
+  return {
+    id: Number(row.id),
+    orderNumber: row.order_number,
+    customerId: row.customer_id === null ? null : Number(row.customer_id),
+    customerName: row.customer_name,
+    customerEmail: row.customer_email,
+    customerPhone: row.customer_phone,
+    status: row.status,
+    notes: row.notes,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    items: (row.items || []).map((item) => ({
+      ...item,
+      productId: Number(item.productId),
+      quantity: Number(item.quantity),
+      returnedQuantity: Number(item.returnedQuantity),
+      unitPrice: Number(item.unitPrice),
+    })),
+  }
+}
+
 function normalizeProduct(row) {
   return {
     id: Number(row.id),
@@ -455,7 +522,10 @@ app.delete('/api/products/:id/permanent', requireAuth, requireAdmin, async (requ
     const result = await pool.query('DELETE FROM products WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
     response.status(204).end()
-  } catch (error) { next(error) }
+  } catch (error) {
+    if (error.code === '23503') return response.status(409).json({ message: 'Produk yang tercatat pada pesanan pembelian tidak dapat dihapus permanen.' })
+    next(error)
+  }
 })
 
 app.get('/api/products/:id/movements', requireAuth, async (request, response, next) => {
@@ -562,6 +632,226 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, async (request, response
     if (!result.rowCount) return response.status(404).json({ message: 'User not found' })
     response.status(204).end()
   } catch (error) { next(error) }
+})
+
+const supplierFields = 'id, name, contact_name, email, phone, address, notes, created_at, updated_at'
+
+function supplierValues(body = {}) {
+  const name = String(body.name || '').trim()
+  const contactName = String(body.contactName || '').trim()
+  const email = String(body.email || '').trim().toLowerCase()
+  const phone = String(body.phone || '').trim()
+  const address = String(body.address || '').trim()
+  const notes = String(body.notes || '').trim()
+  if (!name || name.length > 160) return { error: 'Nama pemasok wajib diisi (maksimal 160 karakter).' }
+  if (contactName.length > 120 || email.length > 255 || phone.length > 40 || address.length > 4000 || notes.length > 4000) {
+    return { error: 'Panjang informasi kontak pemasok melebihi batas.' }
+  }
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Format email pemasok tidak valid.' }
+  return { values: [name, contactName || null, email || null, phone || null, address || null, notes || null] }
+}
+
+app.get('/api/suppliers', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT s.*, COUNT(po.id)::int AS purchase_count
+      FROM suppliers s
+      LEFT JOIN purchase_orders po ON po.supplier_id = s.id
+      GROUP BY s.id
+      ORDER BY s.name ASC
+    `)
+    response.json(result.rows.map(normalizeSupplier))
+  } catch (error) { next(error) }
+})
+
+app.post('/api/suppliers', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const validated = supplierValues(request.body)
+    if (validated.error) return response.status(400).json({ message: validated.error })
+    const result = await pool.query(`INSERT INTO suppliers (name, contact_name, email, phone, address, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING ${supplierFields}`, validated.values)
+    response.status(201).json(normalizeSupplier(result.rows[0]))
+  } catch (error) { next(error) }
+})
+
+app.put('/api/suppliers/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const validated = supplierValues(request.body)
+    if (validated.error) return response.status(400).json({ message: validated.error })
+    const result = await pool.query(`UPDATE suppliers SET name=$1, contact_name=$2, email=$3, phone=$4, address=$5, notes=$6, updated_at=NOW() WHERE id=$7 RETURNING ${supplierFields}`, [...validated.values, request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Pemasok tidak ditemukan.' })
+    response.json(normalizeSupplier(result.rows[0]))
+  } catch (error) { next(error) }
+})
+
+app.delete('/api/suppliers/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const result = await pool.query('DELETE FROM suppliers WHERE id=$1', [request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Pemasok tidak ditemukan.' })
+    response.status(204).end()
+  } catch (error) {
+    if (error.code === '23503') return response.status(409).json({ message: 'Pemasok yang sudah memiliki pesanan pembelian tidak dapat dihapus.' })
+    next(error)
+  }
+})
+
+async function readPurchaseOrders(where = '', values = []) {
+  const result = await pool.query(`
+    SELECT po.*,
+      COALESCE(
+        json_agg(json_build_object(
+          'id', poi.id,
+          'productId', poi.product_id,
+          'productName', poi.product_name,
+          'sku', poi.sku,
+          'quantity', poi.quantity,
+          'receivedQuantity', poi.received_quantity,
+          'unitCost', poi.unit_cost
+        ) ORDER BY poi.id) FILTER (WHERE poi.id IS NOT NULL),
+        '[]'::json
+      ) AS items
+    FROM purchase_orders po
+    LEFT JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
+    ${where}
+    GROUP BY po.id
+    ORDER BY po.created_at DESC, po.id DESC
+  `, values)
+  return result.rows.map(normalizePurchaseOrder)
+}
+
+app.get('/api/purchases', requireAuth, async (_request, response, next) => {
+  try { response.json(await readPurchaseOrders()) } catch (error) { next(error) }
+})
+
+app.post('/api/purchases', requireAuth, async (request, response, next) => {
+  const { supplierId, items, notes = '' } = request.body || {}
+  if (!Number.isSafeInteger(Number(supplierId)) || Number(supplierId) < 1) return response.status(400).json({ message: 'Pemasok wajib dipilih.' })
+  if (!Array.isArray(items) || items.length < 1 || items.length > 100) return response.status(400).json({ message: 'Pesanan harus memiliki 1 sampai 100 produk.' })
+  const normalizedItems = items.map((item) => ({
+    productId: Number(item?.productId),
+    quantity: Number(item?.quantity),
+    unitCost: Number(item?.unitCost),
+  }))
+  if (normalizedItems.some((item) => !Number.isSafeInteger(item.productId) || item.productId < 1 || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 2_147_483_647 || !Number.isFinite(item.unitCost) || item.unitCost < 0 || item.unitCost > 9_999_999_999.99)) {
+    return response.status(400).json({ message: 'Produk, jumlah, atau harga beli tidak valid.' })
+  }
+  if (new Set(normalizedItems.map((item) => item.productId)).size !== normalizedItems.length) return response.status(400).json({ message: 'Produk yang sama tidak boleh ditambahkan lebih dari sekali.' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const supplierResult = await client.query(`SELECT ${supplierFields} FROM suppliers WHERE id=$1 FOR SHARE`, [supplierId])
+    if (!supplierResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Pemasok tidak ditemukan.' })
+    }
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const orderResult = await client.query(
+      'INSERT INTO purchase_orders (supplier_id, supplier_name, notes, created_by, created_by_name) VALUES ($1,$2,$3,$4,$5) RETURNING id, created_at',
+      [supplierId, supplierResult.rows[0].name, String(notes).slice(0, 2000) || null, request.userId, userResult.rows[0]?.name || null],
+    )
+    const order = orderResult.rows[0]
+    const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
+    const orderNumber = `PO-${date}-${String(order.id).padStart(6, '0')}`
+    await client.query('UPDATE purchase_orders SET order_number=$1 WHERE id=$2', [orderNumber, order.id])
+
+    for (const item of normalizedItems) {
+      const productResult = await client.query(
+        'SELECT id, name, sku FROM products WHERE id=$1 AND deleted_at IS NULL FOR SHARE',
+        [item.productId],
+      )
+      if (!productResult.rowCount) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Produk dengan ID ${item.productId} tidak ditemukan atau sudah diarsipkan.` })
+      }
+      const product = productResult.rows[0]
+      await client.query(
+        'INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, sku, quantity, unit_cost) VALUES ($1,$2,$3,$4,$5,$6)',
+        [order.id, product.id, product.name, product.sku, item.quantity, item.unitCost],
+      )
+    }
+    await client.query('COMMIT')
+    response.status(201).json((await readPurchaseOrders('WHERE po.id=$1', [order.id]))[0])
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.post('/api/purchases/:id/receive', requireAuth, async (request, response, next) => {
+  const { items } = request.body || {}
+  if (!Array.isArray(items) || items.length < 1) return response.status(400).json({ message: 'Masukkan jumlah barang yang diterima.' })
+  const receipts = items.map((item) => ({ itemId: Number(item?.itemId), quantity: Number(item?.quantity) }))
+  if (receipts.some((item) => !Number.isSafeInteger(item.itemId) || item.itemId < 1 || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 2_147_483_647)) {
+    return response.status(400).json({ message: 'Jumlah penerimaan harus berupa bilangan bulat positif.' })
+  }
+  if (new Set(receipts.map((item) => item.itemId)).size !== receipts.length) return response.status(400).json({ message: 'Baris produk duplikat pada penerimaan.' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const orderResult = await client.query('SELECT id, order_number, status FROM purchase_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Pesanan pembelian tidak ditemukan.' })
+    }
+    const order = orderResult.rows[0]
+    if (order.status === 'received') {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan ini sudah diterima seluruhnya.' })
+    }
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    for (const receipt of receipts) {
+      const itemResult = await client.query(`
+        SELECT poi.id, poi.product_id, poi.product_name, poi.quantity, poi.received_quantity,
+               p.stock, p.low_stock_threshold, p.deleted_at
+        FROM purchase_order_items poi
+        JOIN products p ON p.id=poi.product_id
+        WHERE poi.id=$1 AND poi.purchase_order_id=$2
+        FOR UPDATE OF poi, p
+      `, [receipt.itemId, order.id])
+      if (!itemResult.rowCount) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Baris produk tidak termasuk dalam pesanan ini.' })
+      }
+      const item = itemResult.rows[0]
+      if (item.deleted_at) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: `Produk "${item.product_name}" sudah diarsipkan dan tidak dapat menerima stok.` })
+      }
+      const remaining = item.quantity - item.received_quantity
+      if (receipt.quantity > remaining) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Jumlah penerimaan "${item.product_name}" melebihi sisa ${remaining} unit.` })
+      }
+      const stockBefore = item.stock
+      const stockAfter = stockBefore + receipt.quantity
+      if (stockAfter > 2_147_483_647) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: `Stok "${item.product_name}" melebihi batas yang dapat dicatat.` })
+      }
+      const status = stockAfter === 0 ? 'Out of stock' : stockAfter <= item.low_stock_threshold ? 'Low stock' : 'Active'
+      await client.query(
+        'UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3',
+        [stockAfter, status, item.product_id],
+      )
+      await client.query(
+        'UPDATE purchase_order_items SET received_quantity=received_quantity+$1 WHERE id=$2',
+        [receipt.quantity, item.id],
+      )
+      await client.query(
+        'INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [item.product_id, request.userId, userResult.rows[0]?.name ?? null, receipt.quantity, stockBefore, stockAfter, `Purchase ${order.order_number}`],
+      )
+    }
+    const remainingResult = await client.query('SELECT COUNT(*)::int AS count FROM purchase_order_items WHERE purchase_order_id=$1 AND received_quantity < quantity', [order.id])
+    const status = remainingResult.rows[0].count === 0 ? 'received' : 'partially_received'
+    await client.query('UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2', [status, order.id])
+    await client.query('COMMIT')
+    response.json((await readPurchaseOrders('WHERE po.id=$1', [order.id]))[0])
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
 })
 
 // --- Categories: read for any authenticated user, writes restricted to admins. ---
