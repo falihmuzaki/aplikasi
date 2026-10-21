@@ -203,6 +203,9 @@ tbody tr:hover { background: #f8fbfa; }
 .feature-overlay .topbar { padding-top: 2px; }
 .feature-overlay .catalog-panel { box-shadow: 0 5px 20px rgba(34, 69, 70, .045); }
 .backup-warning { color: #73561b; background: #fff8e8; border-color: #f1dfa9; }
+.cash-session-required { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.cash-session-required strong { color: #26494b; font-size: 13px; }
+.cash-session-required p { margin-top: 4px; }
 .toast { border-radius: 11px; box-shadow: 0 12px 35px rgba(20, 45, 48, .16); }
 .login-page { background: radial-gradient(ellipse at 15% 15%, #e1f2eb 0, transparent 34%), radial-gradient(ellipse at 90% 85%, #d9ece8 0, transparent 30%), #f3f7f6; }
 .login-card { border-color: #e0e9e7; border-radius: 18px; box-shadow: 0 24px 70px rgba(34, 69, 70, .13); }
@@ -278,6 +281,7 @@ tbody tr:hover { background: #f8fbfa; }
   .stat-card > strong { overflow-wrap: anywhere; font-size: 19px; }
   .panel-heading { gap: 10px; padding: 15px 14px; }
   .panel-heading-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .cash-session-required { align-items: flex-start; flex-direction: column; }
   .toolbar { padding: 11px 14px; }
   .feature-launcher { left: 8px; right: 8px; bottom: 8px; max-width: none; width: auto; }
   .feature-overlay { padding: 22px 12px 75px; }
