@@ -361,10 +361,12 @@ async function lockOpenCashSession(client, userId) {
 }
 
 app.get('/api/backup', requireAuth, requireAdmin, async (_request, response, next) => {
+  const client = await pool.connect()
   try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
     const tables = {}
     for (const table of backupTables) {
-      const result = await pool.query(`SELECT * FROM ${table}`)
+      const result = await client.query(`SELECT * FROM ${table}`)
       tables[table] = result.rows.map((row) => {
         if (table !== 'users') return row
         const safeUser = { ...row }
@@ -372,21 +374,27 @@ app.get('/api/backup', requireAuth, requireAdmin, async (_request, response, nex
         return safeUser
       })
     }
+    await client.query('COMMIT')
     response.setHeader('Content-Type', 'application/json; charset=utf-8')
     response.setHeader('Content-Disposition', `attachment; filename="ifal-store-backup-${new Date().toISOString().slice(0, 10)}.json"`)
     response.json({ format: 'ifal-store-backup', version: 1, createdAt: new Date().toISOString(), tables })
-  } catch (error) { next(error) }
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
 })
 
 app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, response, next) => {
   const backup = request.body
   if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) return response.status(400).json({ message: 'File backup tidak valid atau versinya tidak didukung.' })
-  if (backupTables.some((table) => !Array.isArray(backup.tables[table])) || Object.keys(backup.tables).some((table) => !backupTables.includes(table))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
-  const totalRows = backupTables.reduce((sum, table) => sum + backup.tables[table].length, 0)
+  const restoreTables = { ...backup.tables, cash_sessions: backup.tables.cash_sessions === undefined ? [] : backup.tables.cash_sessions }
+  if (backupTables.some((table) => !Array.isArray(restoreTables[table])) || Object.keys(backup.tables).some((table) => !backupTables.includes(table))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
+  const totalRows = backupTables.reduce((sum, table) => sum + restoreTables[table].length, 0)
   if (totalRows > 300_000) return response.status(413).json({ message: 'Backup melebihi batas 300.000 baris.' })
   for (const table of backupTables) {
-    if (backup.tables[table].some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
+    if (restoreTables[table].some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
   }
+  if (!restoreTables.users.some((user) => user.role === 'admin' && user.is_active === true && typeof user.password_hash === 'string' && /^[a-f\d]{32}:[a-f\d]{128}$/i.test(user.password_hash))) return response.status(400).json({ message: 'Backup harus berisi setidaknya satu akun admin aktif dengan hash kata sandi valid agar aplikasi tetap dapat diakses.' })
 
   const client = await pool.connect()
   try {
@@ -400,13 +408,16 @@ app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, respo
     for (const column of columnResults.rows) columnsByTable.get(column.table_name)?.add(column.column_name)
     for (const table of backupTables) {
       const allowedColumns = columnsByTable.get(table)
-      if (!allowedColumns?.size || backup.tables[table].some((row) => Object.keys(row).some((key) => !allowedColumns.has(key)))) throw new Error(`Kolom backup tabel ${table} tidak sesuai.`)
+      if (!allowedColumns?.size || restoreTables[table].some((row) => Object.keys(row).some((key) => !allowedColumns.has(key)))) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Kolom backup tabel ${table} tidak sesuai.` })
+      }
     }
 
     for (const table of [...backupTables].reverse()) await client.query(`DELETE FROM ${table}`)
     for (const table of backupTables) {
       const columns = [...columnsByTable.get(table)]
-      for (const row of backup.tables[table]) {
+      for (const row of restoreTables[table]) {
         const presentColumns = columns.filter((column) => Object.hasOwn(row, column))
         if (!presentColumns.length) continue
         const placeholders = presentColumns.map((_, index) => `$${index + 1}`).join(', ')
@@ -1773,7 +1784,7 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     const invoiceNumber = orderNumber.replace(/^SO-/, 'INV-')
     await client.query('UPDATE sales_orders SET order_number=$1, invoice_number=$2 WHERE id=$3', [orderNumber, invoiceNumber, order.id])
 
-    let checkoutTotal = 0
+    let checkoutTotalCents = 0n
     for (const item of normalizedItems.sort((a, b) => a.productId - b.productId)) {
       const productResult = await client.query(
         `SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches,
@@ -1787,7 +1798,14 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
         return response.status(400).json({ message: `Produk dengan ID ${item.productId} tidak ditemukan atau sudah diarsipkan.` })
       }
       const product = productResult.rows[0]
-      checkoutTotal += Number(product.price) * item.quantity
+      if (checkoutPaymentMethod === 'cash') {
+        const [wholePrice, fractionalPrice = ''] = String(product.price).split('.')
+        checkoutTotalCents += (BigInt(wholePrice) * 100n + BigInt(fractionalPrice.padEnd(2, '0'))) * BigInt(item.quantity)
+        if (checkoutTotalCents > 999_999_999_999n) {
+          await client.query('ROLLBACK')
+          return response.status(400).json({ message: 'Total checkout melebihi batas nominal transaksi.' })
+        }
+      }
       const warehouseStockResult = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [warehouseId, product.id])
       const warehouseStock = warehouseStockResult.rows[0]?.stock || 0
       if (item.quantity > warehouseStock) {
@@ -1825,6 +1843,7 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
       )
     }
     if (checkoutPaymentMethod === 'cash') {
+      const checkoutTotal = `${checkoutTotalCents / 100n}.${String(checkoutTotalCents % 100n).padStart(2, '0')}`
       await client.query(
         "INSERT INTO sales_payments (sales_order_id, kind, amount, method, notes, recorded_by, recorded_by_name, cash_session_id) VALUES ($1,'payment',$2,'cash','POS checkout',$3,$4,$5)",
         [order.id, checkoutTotal, request.userId, userResult.rows[0]?.name || null, cashSession.id],
