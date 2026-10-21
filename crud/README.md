@@ -45,10 +45,18 @@ Menu **Suppliers** menyimpan nama pemasok dan informasi kontak; admin dapat mena
 
 Menu **Purchases** membuat pesanan pembelian berisi pemasok, produk, jumlah, dan harga beli per unit. Pesanan dapat diterima sekaligus atau sebagian. Setiap penerimaan menambah stok produk dan membuat catatan pada **Stock log**; status pesanan berubah dari *Dipesan* ke *Diterima sebagian* lalu *Diterima*. Admin maupun staff yang sudah login dapat membuat pesanan dan mencatat penerimaan.
 
-Tabel `suppliers`, `purchase_orders`, dan `purchase_order_items` dibuat otomatis saat server API dijalankan. Endpoint API menggunakan token login:
+Tabel `suppliers`, `purchase_orders`, `purchase_order_items`, `customers`, `sales_orders`, dan `sales_order_items` dibuat otomatis saat server API dijalankan. Endpoint API menggunakan token login:
 
 - `GET /api/suppliers`, `POST /api/suppliers`, `PUT /api/suppliers/:id`, `DELETE /api/suppliers/:id`
 - `GET /api/purchases`, `POST /api/purchases`, `POST /api/purchases/:id/receive`
+
+## Pelanggan dan pesanan penjualan
+
+Menu **Customers** menyimpan nama dan kontak pelanggan. Admin dapat menambah, mengubah, dan menghapus data; staff dapat melihatnya. Menu **Sales** digunakan admin maupun staff untuk membuat pesanan atas nama pelanggan terdaftar. Harga jual disalin dari harga produk saat transaksi, stok diperiksa dan dikurangi saat pesanan disimpan, serta setiap pengurangan masuk ke **Stock log**.
+
+Pesanan berstatus *Dikonfirmasi* setelah dibuat. Pesanan dapat dibatalkan untuk mengembalikan stok yang belum diretur, atau diproses sebagai retur penuh/sebagian yang menambah stok. Perubahan stok akibat penjualan, retur, dan pembatalan dicatat dalam transaksi database agar pesanan, stok, dan stock log tetap sinkron.
+
+Endpoint penjualan ber-token: `GET /api/customers`, `POST /api/customers`, `PUT /api/customers/:id`, `DELETE /api/customers/:id`, `GET /api/sales`, `POST /api/sales`, `POST /api/sales/:id/return`, dan `POST /api/sales/:id/cancel`.
 
 ## Autentikasi, MFA, dan reset password
 
@@ -75,12 +83,12 @@ Token login dikirim frontend sebagai header `Authorization: Bearer <token>`. End
 
 Model privilege bawaan berbasis kolom `role` pada tabel `users` (`admin` atau `staff`):
 
-- **Admin**: dapat mengelola **users** dan **suppliers** (lihat/tambah/edit/hapus).
-- **Staff**: dapat mengakses **products**, melihat **suppliers**, serta membuat pesanan dan mencatat penerimaan stok. Staff **tidak bisa** mengelola users atau mengubah data suppliers.
+- **Admin**: dapat mengelola **users**, **suppliers**, dan **customers** (lihat/tambah/edit/hapus).
+- **Staff**: dapat mengakses **products**, melihat **suppliers**/**customers**, membuat pesanan pembelian/penjualan, dan mencatat penerimaan/retur stok. Staff **tidak bisa** mengelola users atau mengubah data pemasok/pelanggan.
 
 Penegakan di dua lapis:
 
 - **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`.
 - **Frontend**: menu dan tampilan **Users** disembunyikan untuk staff, dan aplikasi tidak memanggil `GET /api/users` untuk staff. Staff diarahkan ke tampilan products secara default.
 
-Admin dan staff sama-sama dapat melihat/mengubah products serta mengelola alur purchase orders. Penerimaan pembelian menambah stok dan dicatat pada stock log.
+Admin dan staff sama-sama dapat melihat/mengubah products serta mengelola alur purchase orders dan sales orders. Penerimaan pembelian dan retur/pembatalan penjualan menambah stok; penjualan menguranginya. Semua dicatat pada stock log.

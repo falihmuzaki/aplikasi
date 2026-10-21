@@ -854,6 +854,273 @@ app.post('/api/purchases/:id/receive', requireAuth, async (request, response, ne
   } finally { client.release() }
 })
 
+const customerFields = 'id, name, email, phone, address, notes, created_at, updated_at'
+
+function customerValues(body = {}) {
+  const name = String(body.name || '').trim()
+  const email = String(body.email || '').trim().toLowerCase()
+  const phone = String(body.phone || '').trim()
+  const address = String(body.address || '').trim()
+  const notes = String(body.notes || '').trim()
+  if (!name || name.length > 160) return { error: 'Nama pelanggan wajib diisi (maksimal 160 karakter).' }
+  if (email.length > 255 || phone.length > 40 || address.length > 4000 || notes.length > 4000) return { error: 'Panjang informasi pelanggan melebihi batas.' }
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Format email pelanggan tidak valid.' }
+  return { values: [name, email || null, phone || null, address || null, notes || null] }
+}
+
+app.get('/api/customers', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, COUNT(so.id)::int AS order_count
+      FROM customers c
+      LEFT JOIN sales_orders so ON so.customer_id=c.id
+      GROUP BY c.id
+      ORDER BY c.name ASC
+    `)
+    response.json(result.rows.map(normalizeCustomer))
+  } catch (error) { next(error) }
+})
+
+app.post('/api/customers', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const validated = customerValues(request.body)
+    if (validated.error) return response.status(400).json({ message: validated.error })
+    const result = await pool.query(`INSERT INTO customers (name, email, phone, address, notes) VALUES ($1,$2,$3,$4,$5) RETURNING ${customerFields}`, validated.values)
+    response.status(201).json(normalizeCustomer(result.rows[0]))
+  } catch (error) { next(error) }
+})
+
+app.put('/api/customers/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const validated = customerValues(request.body)
+    if (validated.error) return response.status(400).json({ message: validated.error })
+    const result = await pool.query(`UPDATE customers SET name=$1, email=$2, phone=$3, address=$4, notes=$5, updated_at=NOW() WHERE id=$6 RETURNING ${customerFields}`, [...validated.values, request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Pelanggan tidak ditemukan.' })
+    response.json(normalizeCustomer(result.rows[0]))
+  } catch (error) { next(error) }
+})
+
+app.delete('/api/customers/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const result = await pool.query('DELETE FROM customers WHERE id=$1', [request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Pelanggan tidak ditemukan.' })
+    response.status(204).end()
+  } catch (error) { next(error) }
+})
+
+async function readSalesOrders(where = '', values = []) {
+  const result = await pool.query(`
+    SELECT so.*,
+      COALESCE(
+        json_agg(json_build_object(
+          'id', soi.id,
+          'productId', soi.product_id,
+          'productName', soi.product_name,
+          'sku', soi.sku,
+          'quantity', soi.quantity,
+          'returnedQuantity', soi.returned_quantity,
+          'unitPrice', soi.unit_price
+        ) ORDER BY soi.id) FILTER (WHERE soi.id IS NOT NULL),
+        '[]'::json
+      ) AS items
+    FROM sales_orders so
+    LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
+    ${where}
+    GROUP BY so.id
+    ORDER BY so.created_at DESC, so.id DESC
+  `, values)
+  return result.rows.map(normalizeSalesOrder)
+}
+
+app.get('/api/sales', requireAuth, async (_request, response, next) => {
+  try { response.json(await readSalesOrders()) } catch (error) { next(error) }
+})
+
+app.post('/api/sales', requireAuth, async (request, response, next) => {
+  const { customerId, items, notes = '' } = request.body || {}
+  if (!Number.isSafeInteger(Number(customerId)) || Number(customerId) < 1) return response.status(400).json({ message: 'Pelanggan wajib dipilih.' })
+  if (!Array.isArray(items) || items.length < 1 || items.length > 100) return response.status(400).json({ message: 'Pesanan harus memiliki 1 sampai 100 produk.' })
+  const normalizedItems = items.map((item) => ({
+    productId: Number(item?.productId),
+    quantity: Number(item?.quantity),
+  }))
+  if (normalizedItems.some((item) => !Number.isSafeInteger(item.productId) || item.productId < 1 || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 2_147_483_647)) {
+    return response.status(400).json({ message: 'Produk atau jumlah tidak valid.' })
+  }
+  if (new Set(normalizedItems.map((item) => item.productId)).size !== normalizedItems.length) return response.status(400).json({ message: 'Produk yang sama tidak boleh ditambahkan lebih dari sekali.' })
+  if (String(notes).length > 2000) return response.status(400).json({ message: 'Catatan maksimal 2.000 karakter.' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const customerResult = await client.query(`SELECT ${customerFields} FROM customers WHERE id=$1 FOR SHARE`, [customerId])
+    if (!customerResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Pelanggan tidak ditemukan.' })
+    }
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const customer = customerResult.rows[0]
+    const orderResult = await client.query(
+      'INSERT INTO sales_orders (customer_id, customer_name, customer_email, customer_phone, notes, created_by, created_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, created_at',
+      [customer.id, customer.name, customer.email, customer.phone, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null],
+    )
+    const order = orderResult.rows[0]
+    const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
+    const orderNumber = `SO-${date}-${String(order.id).padStart(6, '0')}`
+    await client.query('UPDATE sales_orders SET order_number=$1 WHERE id=$2', [orderNumber, order.id])
+
+    for (const item of normalizedItems.sort((a, b) => a.productId - b.productId)) {
+      const productResult = await client.query(
+        'SELECT id, name, sku, price, stock, low_stock_threshold FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',
+        [item.productId],
+      )
+      if (!productResult.rowCount) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Produk dengan ID ${item.productId} tidak ditemukan atau sudah diarsipkan.` })
+      }
+      const product = productResult.rows[0]
+      if (item.quantity > product.stock) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: `Stok "${product.name}" tidak cukup. Tersedia ${product.stock} unit.` })
+      }
+      const stockAfter = product.stock - item.quantity
+      const status = stockAfter === 0 ? 'Out of stock' : stockAfter <= product.low_stock_threshold ? 'Low stock' : 'Active'
+      await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, product.id])
+      await client.query(
+        'INSERT INTO sales_order_items (sales_order_id, product_id, product_name, sku, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6)',
+        [order.id, product.id, product.name, product.sku, item.quantity, product.price],
+      )
+      await client.query(
+        'INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [product.id, request.userId, userResult.rows[0]?.name ?? null, -item.quantity, product.stock, stockAfter, `Sale ${orderNumber}`],
+      )
+    }
+    await client.query('COMMIT')
+    response.status(201).json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.post('/api/sales/:id/return', requireAuth, async (request, response, next) => {
+  const { items } = request.body || {}
+  if (!Array.isArray(items) || items.length < 1) return response.status(400).json({ message: 'Pilih produk dan jumlah retur.' })
+  const returns = items.map((item) => ({ itemId: Number(item?.itemId), quantity: Number(item?.quantity) }))
+  if (returns.some((item) => !Number.isSafeInteger(item.itemId) || item.itemId < 1 || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 2_147_483_647)) {
+    return response.status(400).json({ message: 'Jumlah retur harus berupa bilangan bulat positif.' })
+  }
+  if (new Set(returns.map((item) => item.itemId)).size !== returns.length) return response.status(400).json({ message: 'Baris produk duplikat pada retur.' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const orderResult = await client.query('SELECT id, order_number, status FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Pesanan penjualan tidak ditemukan.' })
+    }
+    const order = orderResult.rows[0]
+    if (order.status === 'cancelled' || order.status === 'returned') {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan ini sudah dibatalkan atau seluruhnya diretur.' })
+    }
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    for (const item of returns) {
+      const lineResult = await client.query(`
+        SELECT soi.id, soi.product_id, soi.product_name, soi.quantity, soi.returned_quantity,
+               p.stock, p.low_stock_threshold
+        FROM sales_order_items soi
+        JOIN products p ON p.id=soi.product_id
+        WHERE soi.id=$1 AND soi.sales_order_id=$2
+        FOR UPDATE OF soi, p
+      `, [item.itemId, order.id])
+      if (!lineResult.rowCount) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Baris produk tidak termasuk dalam pesanan ini.' })
+      }
+      const line = lineResult.rows[0]
+      const remaining = line.quantity - line.returned_quantity
+      if (item.quantity > remaining) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Jumlah retur "${line.product_name}" melebihi sisa ${remaining} unit.` })
+      }
+      if (line.stock + item.quantity > 2_147_483_647) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: `Stok "${line.product_name}" melebihi batas yang dapat dicatat.` })
+      }
+      const stockAfter = line.stock + item.quantity
+      const status = stockAfter <= line.low_stock_threshold ? 'Low stock' : 'Active'
+      await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, line.product_id])
+      await client.query('UPDATE sales_order_items SET returned_quantity=returned_quantity+$1 WHERE id=$2', [item.quantity, line.id])
+      await client.query(
+        'INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [line.product_id, request.userId, userResult.rows[0]?.name ?? null, item.quantity, line.stock, stockAfter, `Return ${order.order_number}`],
+      )
+    }
+    const outstanding = await client.query('SELECT COUNT(*)::int AS count FROM sales_order_items WHERE sales_order_id=$1 AND returned_quantity < quantity', [order.id])
+    const status = outstanding.rows[0].count === 0 ? 'returned' : 'partially_returned'
+    await client.query('UPDATE sales_orders SET status=$1, updated_at=NOW() WHERE id=$2', [status, order.id])
+    await client.query('COMMIT')
+    response.json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.post('/api/sales/:id/cancel', requireAuth, async (request, response, next) => {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const orderResult = await client.query('SELECT id, order_number, status FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Pesanan penjualan tidak ditemukan.' })
+    }
+    const order = orderResult.rows[0]
+    if (order.status === 'cancelled') {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan ini sudah dibatalkan.' })
+    }
+    if (order.status === 'returned') {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan yang sudah diretur seluruhnya tidak dapat dibatalkan.' })
+    }
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const linesResult = await client.query(`
+      SELECT soi.id, soi.product_id, soi.product_name, soi.quantity, soi.returned_quantity,
+             p.stock, p.low_stock_threshold
+      FROM sales_order_items soi
+      JOIN products p ON p.id=soi.product_id
+      WHERE soi.sales_order_id=$1
+      ORDER BY soi.id
+      FOR UPDATE OF soi, p
+    `, [order.id])
+    for (const line of linesResult.rows) {
+      const quantity = line.quantity - line.returned_quantity
+      if (!quantity) continue
+      if (line.stock + quantity > 2_147_483_647) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: `Stok "${line.product_name}" melebihi batas yang dapat dicatat.` })
+      }
+      const stockAfter = line.stock + quantity
+      const status = stockAfter <= line.low_stock_threshold ? 'Low stock' : 'Active'
+      await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, line.product_id])
+      await client.query(
+        'INSERT INTO stock_movements (product_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [line.product_id, request.userId, userResult.rows[0]?.name ?? null, quantity, line.stock, stockAfter, `Cancel ${order.order_number}`],
+      )
+    }
+    await client.query("UPDATE sales_orders SET status='cancelled', updated_at=NOW() WHERE id=$1", [order.id])
+    await client.query('COMMIT')
+    response.json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
 // --- Categories: read for any authenticated user, writes restricted to admins. ---
 // Each category row carries a live product usage count so the UI can show it and so
 // deletes can be refused while a category is still referenced by products.
