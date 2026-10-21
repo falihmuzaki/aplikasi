@@ -775,6 +775,19 @@ app.get('/api/stats', requireAuth, async (_request, response, next) => {
   } catch (error) { next(error) }
 })
 
+app.get('/api/navigation-counts', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM suppliers) AS suppliers,
+        (SELECT COUNT(*)::int FROM purchase_orders) AS purchases,
+        (SELECT COUNT(*)::int FROM customers) AS customers,
+        (SELECT COUNT(*)::int FROM sales_orders) AS sales
+    `)
+    response.json(result.rows[0])
+  } catch (error) { next(error) }
+})
+
 app.post('/api/products', requireAuth, async (request, response, next) => {
   const client = await pool.connect()
   try {
