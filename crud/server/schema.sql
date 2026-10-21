@@ -173,3 +173,22 @@ CREATE TABLE IF NOT EXISTS sales_order_items (
 );
 
 CREATE INDEX IF NOT EXISTS sales_order_items_order_idx ON sales_order_items(sales_order_id);
+
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(32);
+UPDATE sales_orders SET invoice_number = 'INV-' || SUBSTRING(order_number FROM 4) WHERE invoice_number IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS sales_orders_invoice_number_idx ON sales_orders(invoice_number) WHERE invoice_number IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS sales_payments (
+  id BIGSERIAL PRIMARY KEY,
+  sales_order_id BIGINT NOT NULL REFERENCES sales_orders(id) ON DELETE RESTRICT,
+  kind VARCHAR(16) NOT NULL CHECK (kind IN ('payment', 'refund')),
+  amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+  method VARCHAR(24) NOT NULL CHECK (method IN ('cash', 'bank_transfer', 'qris', 'card', 'other')),
+  reference VARCHAR(120),
+  notes VARCHAR(500),
+  recorded_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  recorded_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS sales_payments_order_idx ON sales_payments(sales_order_id, created_at DESC);

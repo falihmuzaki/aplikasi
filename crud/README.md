@@ -56,7 +56,9 @@ Menu **Customers** menyimpan nama dan kontak pelanggan. Admin dapat menambah, me
 
 Pesanan berstatus *Dikonfirmasi* setelah dibuat. Pesanan dapat dibatalkan untuk mengembalikan stok yang belum diretur, atau diproses sebagai retur penuh/sebagian yang menambah stok. Perubahan stok akibat penjualan, retur, dan pembatalan dicatat dalam transaksi database agar pesanan, stok, dan stock log tetap sinkron.
 
-Endpoint penjualan ber-token: `GET /api/customers`, `POST /api/customers`, `PUT /api/customers/:id`, `DELETE /api/customers/:id`, `GET /api/sales`, `POST /api/sales`, `POST /api/sales/:id/return`, dan `POST /api/sales/:id/cancel`.
+Pesanan juga memiliki nomor invoice permanen. Dari daftar penjualan, invoice dapat ditinjau dan dicetak atau disimpan sebagai PDF melalui dialog cetak browser. Pembayaran dapat dicatat sebagian maupun lunas, dengan metode tunai, transfer bank, QRIS, kartu, atau lainnya serta referensi transaksi. Status pembayaran mengikuti jumlah tagihan, pembayaran, retur, dan refund; refund dibatasi pada dana yang sudah dibayar dan menjadi berlebih setelah retur atau pembatalan.
+
+Tabel `sales_payments` menyimpan riwayat pembayaran/refund beserta metode, referensi, pencatat, dan waktunya. Endpoint ber-token: `GET /api/customers`, `POST /api/customers`, `PUT /api/customers/:id`, `DELETE /api/customers/:id`, `GET /api/sales`, `POST /api/sales`, `POST /api/sales/:id/payments`, `POST /api/sales/:id/return`, dan `POST /api/sales/:id/cancel`.
 
 ## Autentikasi, MFA, dan reset password
 

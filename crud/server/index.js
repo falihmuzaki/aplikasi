@@ -123,9 +123,31 @@ function normalizeCustomer(row) {
 }
 
 function normalizeSalesOrder(row) {
+  const items = (row.items || []).map((item) => ({
+    ...item,
+    productId: Number(item.productId),
+    quantity: Number(item.quantity),
+    returnedQuantity: Number(item.returnedQuantity),
+    unitPrice: Number(item.unitPrice),
+  }))
+  const paidAmount = Math.round(Number(row.paid_amount || 0) * 100) / 100
+  const refundedAmount = Math.round(Number(row.refunded_amount || 0) * 100) / 100
+  const payments = (row.payments || []).map((payment) => ({ ...payment, amount: Number(payment.amount) }))
+  const totalAmount = row.status === 'cancelled' ? 0 : Math.round(items.reduce((sum, item) => sum + (item.quantity - item.returnedQuantity) * item.unitPrice, 0) * 100) / 100
+  const netPaid = paidAmount - refundedAmount
+  const refundDue = Math.round(Math.max(0, netPaid - totalAmount) * 100) / 100
+  let paymentStatus = 'unpaid'
+  if (refundedAmount > 0 && netPaid <= 0) paymentStatus = 'refunded'
+  else if (refundDue > 0 && refundedAmount > 0) paymentStatus = 'partially_refunded'
+  else if (refundDue > 0) paymentStatus = 'refund_due'
+  else if (totalAmount > 0 && netPaid >= totalAmount) paymentStatus = 'paid'
+  else if (refundedAmount > 0) paymentStatus = 'partially_refunded'
+  else if (netPaid > 0) paymentStatus = 'partial'
+
   return {
     id: Number(row.id),
     orderNumber: row.order_number,
+    invoiceNumber: row.invoice_number,
     customerId: row.customer_id === null ? null : Number(row.customer_id),
     customerName: row.customer_name,
     customerEmail: row.customer_email,
@@ -135,13 +157,14 @@ function normalizeSalesOrder(row) {
     createdByName: row.created_by_name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    items: (row.items || []).map((item) => ({
-      ...item,
-      productId: Number(item.productId),
-      quantity: Number(item.quantity),
-      returnedQuantity: Number(item.returnedQuantity),
-      unitPrice: Number(item.unitPrice),
-    })),
+    totalAmount,
+    paidAmount,
+    refundedAmount,
+    balanceDue: Math.round(Math.max(0, totalAmount - netPaid) * 100) / 100,
+    refundDue,
+    paymentStatus,
+    payments,
+    items,
   }
 }
 
@@ -922,7 +945,23 @@ async function readSalesOrders(where = '', values = []) {
           'unitPrice', soi.unit_price
         ) ORDER BY soi.id) FILTER (WHERE soi.id IS NOT NULL),
         '[]'::json
-      ) AS items
+      ) AS items,
+      COALESCE((
+        SELECT json_agg(json_build_object(
+          'id', sp.id,
+          'kind', sp.kind,
+          'amount', sp.amount,
+          'method', sp.method,
+          'reference', sp.reference,
+          'notes', sp.notes,
+          'recordedByName', sp.recorded_by_name,
+          'createdAt', sp.created_at
+        ) ORDER BY sp.created_at DESC, sp.id DESC)
+        FROM sales_payments sp
+        WHERE sp.sales_order_id=so.id
+      ), '[]'::json) AS payments,
+      COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='payment'), 0) AS paid_amount,
+      COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='refund'), 0) AS refunded_amount
     FROM sales_orders so
     LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
     ${where}
@@ -967,7 +1006,8 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     const order = orderResult.rows[0]
     const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
     const orderNumber = `SO-${date}-${String(order.id).padStart(6, '0')}`
-    await client.query('UPDATE sales_orders SET order_number=$1 WHERE id=$2', [orderNumber, order.id])
+    const invoiceNumber = orderNumber.replace(/^SO-/, 'INV-')
+    await client.query('UPDATE sales_orders SET order_number=$1, invoice_number=$2 WHERE id=$3', [orderNumber, invoiceNumber, order.id])
 
     for (const item of normalizedItems.sort((a, b) => a.productId - b.productId)) {
       const productResult = await client.query(
@@ -997,6 +1037,74 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     }
     await client.query('COMMIT')
     response.status(201).json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.post('/api/sales/:id/payments', requireAuth, async (request, response, next) => {
+  const { kind = 'payment', amount, method, reference = '', notes = '' } = request.body || {}
+  const amountText = String(amount ?? '')
+  const amountValue = Number(amountText)
+  const amountCents = Math.round(amountValue * 100)
+  const methods = ['cash', 'bank_transfer', 'qris', 'card', 'other']
+  if (!['payment', 'refund'].includes(kind)) return response.status(400).json({ message: 'Jenis pencatatan pembayaran tidak valid.' })
+  if (!/^\d{1,10}(\.\d{1,2})?$/.test(amountText) || !Number.isFinite(amountValue) || amountValue <= 0 || amountValue > 9_999_999_999.99) {
+    return response.status(400).json({ message: 'Jumlah harus lebih dari nol dan maksimal dua angka desimal.' })
+  }
+  if (!methods.includes(method)) return response.status(400).json({ message: 'Metode pembayaran tidak valid.' })
+  if (String(reference).length > 120 || String(notes).length > 500) return response.status(400).json({ message: 'Referensi maksimal 120 karakter dan catatan maksimal 500 karakter.' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const orderResult = await client.query('SELECT id, status FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Invoice tidak ditemukan.' })
+    }
+    const order = orderResult.rows[0]
+    const amountResult = await client.query(`
+      SELECT COALESCE(SUM((quantity-returned_quantity)*unit_price), 0) AS total_amount
+      FROM sales_order_items
+      WHERE sales_order_id=$1
+    `, [order.id])
+    const paymentResult = await client.query(`
+      SELECT
+        COALESCE(SUM(amount) FILTER (WHERE kind='payment'), 0) AS paid_amount,
+        COALESCE(SUM(amount) FILTER (WHERE kind='refund'), 0) AS refunded_amount
+      FROM sales_payments
+      WHERE sales_order_id=$1
+    `, [order.id])
+    const totalAmount = order.status === 'cancelled' ? 0 : Number(amountResult.rows[0].total_amount)
+    const paidAmount = Number(paymentResult.rows[0].paid_amount)
+    const refundedAmount = Number(paymentResult.rows[0].refunded_amount)
+    const netPaid = paidAmount - refundedAmount
+    if (kind === 'payment') {
+      if (order.status === 'cancelled' || order.status === 'returned') {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Pembayaran tidak dapat ditambahkan pada pesanan batal atau yang sudah diretur seluruhnya.' })
+      }
+      const outstandingCents = Math.max(0, Math.round((totalAmount - netPaid) * 100))
+      if (amountCents > outstandingCents) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Jumlah pembayaran melebihi sisa tagihan ${(outstandingCents / 100).toFixed(2)}.` })
+      }
+    } else {
+      const refundAvailableCents = Math.max(0, Math.round((netPaid - totalAmount) * 100))
+      if (amountCents > refundAvailableCents) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Jumlah refund melebihi dana berlebih ${(refundAvailableCents / 100).toFixed(2)}.` })
+      }
+    }
+    const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    await client.query(
+      'INSERT INTO sales_payments (sales_order_id, kind, amount, method, reference, notes, recorded_by, recorded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [order.id, kind, amountValue, method, String(reference).trim() || null, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null],
+    )
+    await client.query('COMMIT')
+    response.json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
     next(error)
