@@ -15,10 +15,17 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 const schemaPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'schema.sql')
 
 app.use(cors())
-app.use(express.json({ limit: '8mb' }))
+app.use(express.json({ limit: '50mb' }))
 
 const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || 'lumina-dev-token-secret-change-me'
 const TOKEN_TTL_SECONDS = 7 * 24 * 3600
+const backupTables = [
+  'users', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
+  'purchase_orders', 'purchase_order_items', 'purchase_payments', 'supplier_returns',
+  'supplier_return_items', 'sales_orders', 'sales_order_items', 'product_batches',
+  'sales_payments', 'sales_order_item_batches', 'warehouse_stocks', 'stock_movements',
+  'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses',
+]
 
 // In-memory sliding-window rate limiter. No external dependency, consistent with the
 // rest of this server. State lives in a single process; for multi-instance deploys this
@@ -34,6 +41,76 @@ function createRateLimiter({ windowMs, max, message }) {
       if (fresh.length) hits.set(key, fresh)
       else hits.delete(key)
     }
+
+    app.get('/api/backup', requireAuth, requireAdmin, async (_request, response, next) => {
+      try {
+        const tables = {}
+        for (const table of backupTables) {
+          const result = await pool.query(`SELECT * FROM ${table}`)
+          tables[table] = result.rows.map((row) => {
+            if (table !== 'users') return row
+            const safeUser = { ...row }
+            for (const column of ['login_otp_hash', 'login_otp_expires_at', 'reset_otp_hash', 'reset_otp_expires_at', 'register_otp_hash', 'register_otp_expires_at']) delete safeUser[column]
+            return safeUser
+          })
+        }
+        response.setHeader('Content-Type', 'application/json; charset=utf-8')
+        response.setHeader('Content-Disposition', `attachment; filename="ifal-store-backup-${new Date().toISOString().slice(0, 10)}.json"`)
+        response.json({ format: 'ifal-store-backup', version: 1, createdAt: new Date().toISOString(), tables })
+      } catch (error) { next(error) }
+    })
+
+    app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, response, next) => {
+      const backup = request.body
+      if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) return response.status(400).json({ message: 'File backup tidak valid atau versinya tidak didukung.' })
+      if (backupTables.some((table) => !Array.isArray(backup.tables[table])) || Object.keys(backup.tables).some((table) => !backupTables.includes(table))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
+      const totalRows = backupTables.reduce((sum, table) => sum + backup.tables[table].length, 0)
+      if (totalRows > 300_000) return response.status(413).json({ message: 'Backup melebihi batas 300.000 baris.' })
+      for (const table of backupTables) {
+        if (backup.tables[table].some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
+      }
+
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(`LOCK TABLE ${backupTables.join(', ')} IN ACCESS EXCLUSIVE MODE`)
+        const columnResults = await client.query(
+          `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name = ANY($1::text[])`,
+          [backupTables],
+        )
+        const columnsByTable = new Map(backupTables.map((table) => [table, new Set()]))
+        for (const column of columnResults.rows) columnsByTable.get(column.table_name)?.add(column.column_name)
+        for (const table of backupTables) {
+          const allowedColumns = columnsByTable.get(table)
+          if (!allowedColumns?.size || backup.tables[table].some((row) => Object.keys(row).some((key) => !allowedColumns.has(key)))) throw new Error(`Kolom backup tabel ${table} tidak sesuai.`)
+        }
+
+        for (const table of [...backupTables].reverse()) await client.query(`DELETE FROM ${table}`)
+        for (const table of backupTables) {
+          const columns = [...columnsByTable.get(table)]
+          for (const row of backup.tables[table]) {
+            const presentColumns = columns.filter((column) => Object.hasOwn(row, column))
+            if (!presentColumns.length) continue
+            const placeholders = presentColumns.map((_, index) => `$${index + 1}`).join(', ')
+            await client.query(
+              `INSERT INTO ${table} (${presentColumns.join(', ')}) VALUES (${placeholders})`,
+              presentColumns.map((column) => row[column]),
+            )
+          }
+          if (columnsByTable.get(table).has('id')) {
+            await client.query(
+              `SELECT setval(pg_get_serial_sequence($1, 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM ${table}`,
+              [table],
+            )
+          }
+        }
+        await client.query('COMMIT')
+        response.json({ message: `Pemulihan selesai. ${totalRows} baris data berhasil dipulihkan.` })
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {})
+        next(error)
+      } finally { client.release() }
+    })
   }, windowMs)
   sweep.unref?.()
 
@@ -746,6 +823,11 @@ app.get('/api/reports', requireAuth, requireAdmin, async (request, response, nex
       FROM purchase_orders po
       WHERE ($1='' OR po.created_at::date >= $1::date) AND ($2='' OR po.created_at::date <= $2::date)
     `, [from, to])
+    const expenses = await pool.query(`
+      SELECT COUNT(*)::int AS entry_count, COALESCE(SUM(amount), 0)::numeric AS total
+      FROM operating_expenses
+      WHERE ($1='' OR created_at::date >= $1::date) AND ($2='' OR created_at::date <= $2::date)
+    `, [from, to])
     const bestsellers = await pool.query(`
       SELECT soi.product_id, soi.product_name, SUM(soi.quantity-soi.returned_quantity)::int AS units_sold,
         SUM((soi.quantity-soi.returned_quantity)*soi.unit_price)::numeric AS revenue,
@@ -754,7 +836,43 @@ app.get('/api/reports', requireAuth, requireAdmin, async (request, response, nex
       WHERE so.status<>'cancelled' AND ($1='' OR so.created_at::date >= $1::date) AND ($2='' OR so.created_at::date <= $2::date)
       GROUP BY soi.product_id, soi.product_name ORDER BY units_sold DESC, revenue DESC LIMIT 10
     `, [from, to])
-    response.json({ from: from || null, to: to || null, sales: { orderCount: sales.rows[0].order_count, revenue: Number(sales.rows[0].revenue), grossMargin: Number(sales.rows[0].gross_margin), payments: Number(sales.rows[0].payments), refunds: Number(sales.rows[0].refunds) }, purchases: { orderCount: purchases.rows[0].order_count, orderedAmount: Number(purchases.rows[0].ordered_amount), paidAmount: Number(purchases.rows[0].paid_amount) }, bestsellers: bestsellers.rows.map((row) => ({ productId: Number(row.product_id), productName: row.product_name, unitsSold: row.units_sold, revenue: Number(row.revenue), grossMargin: Number(row.gross_margin) })) })
+    const grossMargin = Number(sales.rows[0].gross_margin)
+    const operatingExpenses = Number(expenses.rows[0].total)
+    response.json({ from: from || null, to: to || null, sales: { orderCount: sales.rows[0].order_count, revenue: Number(sales.rows[0].revenue), grossMargin, payments: Number(sales.rows[0].payments), refunds: Number(sales.rows[0].refunds) }, purchases: { orderCount: purchases.rows[0].order_count, orderedAmount: Number(purchases.rows[0].ordered_amount), paidAmount: Number(purchases.rows[0].paid_amount) }, expenses: { entryCount: expenses.rows[0].entry_count, total: operatingExpenses }, estimatedNetProfit: grossMargin - operatingExpenses, bestsellers: bestsellers.rows.map((row) => ({ productId: Number(row.product_id), productName: row.product_name, unitsSold: row.units_sold, revenue: Number(row.revenue), grossMargin: Number(row.gross_margin) })) })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/expenses', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const from = String(request.query.from || '')
+    const to = String(request.query.to || '')
+    if ((from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) || (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))) return response.status(400).json({ message: 'Format tanggal harus YYYY-MM-DD.' })
+    const result = await pool.query(`
+      SELECT e.*, COALESCE(e.recorded_by_name, u.name) AS recorded_by_name
+      FROM operating_expenses e LEFT JOIN users u ON u.id=e.recorded_by
+      WHERE ($1='' OR e.created_at::date >= $1::date) AND ($2='' OR e.created_at::date <= $2::date)
+      ORDER BY e.created_at DESC, e.id DESC LIMIT 500
+    `, [from, to])
+    response.json(result.rows.map((row) => ({ id: Number(row.id), description: row.description, category: row.category, amount: Number(row.amount), paymentMethod: row.payment_method, reference: row.reference, notes: row.notes, recordedByName: row.recorded_by_name, createdAt: row.created_at })))
+  } catch (error) { next(error) }
+})
+
+app.post('/api/expenses', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const { description, category, amount, paymentMethod = 'cash', reference = '', notes = '' } = request.body || {}
+    const cleanDescription = String(description || '').trim()
+    const cleanCategory = String(category || '').trim()
+    const numericAmount = Number(amount)
+    if (!cleanDescription || cleanDescription.length > 200 || !cleanCategory || cleanCategory.length > 80 || !Number.isFinite(numericAmount) || numericAmount <= 0 || numericAmount > 9_999_999_999.99) return response.status(400).json({ message: 'Deskripsi, kategori, dan jumlah biaya harus valid.' })
+    if (!['cash', 'bank_transfer', 'qris', 'card', 'other'].includes(paymentMethod)) return response.status(400).json({ message: 'Metode pembayaran tidak valid.' })
+    if (String(reference).length > 120 || String(notes).length > 500) return response.status(400).json({ message: 'Referensi maksimal 120 dan catatan maksimal 500 karakter.' })
+    const user = await pool.query('SELECT name FROM users WHERE id=$1', [request.userId])
+    const result = await pool.query(`
+      INSERT INTO operating_expenses (description, category, amount, payment_method, reference, notes, recorded_by, recorded_by_name)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+    `, [cleanDescription, cleanCategory, numericAmount, paymentMethod, String(reference).trim() || null, String(notes).trim() || null, request.userId, user.rows[0]?.name || null])
+    const row = result.rows[0]
+    response.status(201).json({ id: Number(row.id), description: row.description, category: row.category, amount: Number(row.amount), paymentMethod: row.payment_method, reference: row.reference, notes: row.notes, recordedByName: row.recorded_by_name, createdAt: row.created_at })
   } catch (error) { next(error) }
 })
 
@@ -1498,7 +1616,8 @@ app.get('/api/receivables', requireAuth, async (_request, response, next) => {
 app.post('/api/sales', requireAuth, async (request, response, next) => {
   const { customerId, items, notes = '' } = request.body || {}
   const requestedWarehouseId = Number(request.body?.warehouseId || 0)
-  if (!Number.isSafeInteger(Number(customerId)) || Number(customerId) < 1) return response.status(400).json({ message: 'Pelanggan wajib dipilih.' })
+  const normalizedCustomerId = customerId === null || customerId === undefined || customerId === '' ? null : Number(customerId)
+  if (normalizedCustomerId !== null && (!Number.isSafeInteger(normalizedCustomerId) || normalizedCustomerId < 1)) return response.status(400).json({ message: 'Pelanggan tidak valid.' })
   if (!Array.isArray(items) || items.length < 1 || items.length > 100) return response.status(400).json({ message: 'Pesanan harus memiliki 1 sampai 100 produk.' })
   const normalizedItems = items.map((item) => ({
     productId: Number(item?.productId),
@@ -1513,7 +1632,9 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const customerResult = await client.query(`SELECT ${customerFields} FROM customers WHERE id=$1 FOR SHARE`, [customerId])
+    const customerResult = normalizedCustomerId === null
+      ? { rows: [{ id: null, name: 'Pelanggan umum', email: null, phone: null }], rowCount: 1 }
+      : await client.query(`SELECT ${customerFields} FROM customers WHERE id=$1 FOR SHARE`, [normalizedCustomerId])
     if (!customerResult.rowCount) {
       await client.query('ROLLBACK')
       return response.status(400).json({ message: 'Pelanggan tidak ditemukan.' })

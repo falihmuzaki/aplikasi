@@ -72,6 +72,9 @@ Toolbar **Fitur lainnya** di bagian bawah aplikasi menyediakan fitur gudang, sto
 - **Restock**: peringatan stok rendah dan rekomendasi jumlah pemesanan berdasarkan ambang rendah produk.
 - **Barcode/QR**: barcode dapat disimpan pada produk dan dicari dengan scanner USB yang berperilaku seperti keyboard atau dengan mengetik kode. SKU juga dapat dipakai untuk pencarian.
 - **Batch/serial/kedaluwarsa**: aktifkan pada produk tertentu. Barang masuk meminta batch; penjualan mengambil batch yang kedaluwarsanya paling dekat dahulu, dan retur mengembalikan alokasi batch asal.
+- **Biaya operasional & estimasi laba**: admin mencatat pengeluaran per kategori, metode pembayaran, dan referensi. Laporan periode menampilkan total biaya serta estimasi laba operasional (margin kotor dikurangi biaya yang dicatat); angka ini belum mencakup pajak atau biaya yang belum dimasukkan.
+- **Backup & pemulihan**: admin dapat mengunduh seluruh data aplikasi sebagai JSON atau memulihkannya dari file. Pemulihan mengganti seluruh data aktif dan meminta admin masuk kembali. File berisi data usaha serta hash kata sandi; simpan dengan akses terbatas. OTP sementara tidak dimasukkan ke backup.
+- **POS cepat**: dari menu Sales, tombol POS cepat menerima input barcode/SKU, membangun keranjang, mendukung pelanggan umum, lalu membuat invoice dan mencatat pembayaran tunai saat checkout.
 
 Endpoint baru:
 
@@ -79,6 +82,7 @@ Endpoint baru:
 - `GET /api/stocktakes`, `POST /api/stocktakes`, `POST /api/stocktakes/:id/complete`
 - `GET /api/product-batches`, `POST /api/product-batches`, `GET /api/products/lookup/:code`, `PUT /api/products/:id/metadata`
 - `POST /api/purchases/:id/payments`, `POST /api/supplier-returns`, `GET /api/receivables`, `GET /api/reports`, `GET /api/restock-recommendations`
+- `GET /api/expenses`, `POST /api/expenses`, `GET /api/backup`, `POST /api/backup/restore`
 
 ## Autentikasi, MFA, dan reset password
 

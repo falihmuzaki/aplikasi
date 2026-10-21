@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CirclePlus, Printer, RefreshCw, Save, Truck } from 'lucide-react'
+import { CirclePlus, Printer, RefreshCw, Save, Truck, Upload } from 'lucide-react'
 
 const API_URL = 'http://localhost:3001/api'
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
@@ -107,15 +107,89 @@ export function ReportsView() {
   }, [from, to])
   const exportCsv = () => {
     if (!report) return
-    const rows = [['Laporan', 'Jumlah'], ['Periode', `${report.from || ''} s.d. ${report.to || ''}`], ['Jumlah penjualan', report.sales.orderCount], ['Pendapatan penjualan', report.sales.revenue], ['Pembayaran diterima', report.sales.payments], ['Refund', report.sales.refunds], ['Jumlah pembelian', report.purchases.orderCount], ['Nilai pembelian', report.purchases.orderedAmount], ['Pembayaran pemasok', report.purchases.paidAmount], [], ['Produk terlaris', 'Unit', 'Pendapatan'], ...report.bestsellers.map((item) => [item.productName, item.unitsSold, item.revenue])]
+    const rows = [['Laporan', 'Jumlah'], ['Periode', `${report.from || ''} s.d. ${report.to || ''}`], ['Jumlah penjualan', report.sales.orderCount], ['Pendapatan penjualan', report.sales.revenue], ['Pembayaran diterima', report.sales.payments], ['Refund', report.sales.refunds], ['Margin kotor', report.sales.grossMargin], ['Biaya operasional', report.expenses.total], ['Estimasi laba operasional', report.estimatedNetProfit], ['Jumlah pembelian', report.purchases.orderCount], ['Nilai pembelian', report.purchases.orderedAmount], ['Pembayaran pemasok', report.purchases.paidAmount], [], ['Produk terlaris', 'Unit', 'Pendapatan'], ...report.bestsellers.map((item) => [item.productName, item.unitsSold, item.revenue])]
     const csv = rows.map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); link.download = `laporan-${from}-${to}.csv`; link.click(); URL.revokeObjectURL(link.href)
   }
   return <>
     <header className="topbar"><div><p className="breadcrumb">Workspace / <span>Reports</span></p><h1>Laporan usaha</h1></div><div className="panel-heading-actions"><button className="filter-button" onClick={exportCsv}>Export CSV</button><button className="primary-button" onClick={() => window.print()}><Printer size={16} /> Cetak / PDF</button></div></header>
     <section className="catalog-panel"><div className="toolbar"><label>Dari<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Sampai<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><button className="primary-button" onClick={load}>Tampilkan</button></div>{error && <p className="login-error">{error}</p>}
-      {report && <><div className="stats-grid"><div className="stat-card"><span>Penjualan</span><strong>{report.sales.orderCount}</strong><small>{idr(report.sales.revenue)}</small></div><div className="stat-card"><span>Margin kotor*</span><strong>{idr(report.sales.grossMargin)}</strong><small>* berdasarkan biaya beli tersimpan</small></div><div className="stat-card"><span>Pembayaran masuk</span><strong>{idr(report.sales.payments)}</strong><small>Refund {idr(report.sales.refunds)}</small></div><div className="stat-card"><span>Pembelian</span><strong>{report.purchases.orderCount}</strong><small>{idr(report.purchases.orderedAmount)}</small></div><div className="stat-card"><span>Dibayar ke pemasok</span><strong>{idr(report.purchases.paidAmount)}</strong></div></div><div className="table-wrap"><table><thead><tr><th>Produk terlaris</th><th>Unit terjual</th><th>Pendapatan</th><th>Margin kotor*</th></tr></thead><tbody>{report.bestsellers.map((item) => <tr key={item.productId}><td>{item.productName}</td><td>{item.unitsSold}</td><td>{idr(item.revenue)}</td><td>{idr(item.grossMargin)}</td></tr>)}</tbody></table></div></>}
+      {report && <><div className="stats-grid"><div className="stat-card"><span>Penjualan</span><strong>{report.sales.orderCount}</strong><small>{idr(report.sales.revenue)}</small></div><div className="stat-card"><span>Margin kotor*</span><strong>{idr(report.sales.grossMargin)}</strong><small>* berdasarkan biaya beli tersimpan</small></div><div className="stat-card"><span>Biaya operasional</span><strong>{idr(report.expenses.total)}</strong><small>{report.expenses.entryCount} transaksi</small></div><div className="stat-card"><span>Estimasi laba operasional*</span><strong>{idr(report.estimatedNetProfit)}</strong><small>Margin kotor dikurangi biaya</small></div><div className="stat-card"><span>Pembayaran masuk</span><strong>{idr(report.sales.payments)}</strong><small>Refund {idr(report.sales.refunds)}</small></div><div className="stat-card"><span>Pembelian</span><strong>{report.purchases.orderCount}</strong><small>{idr(report.purchases.orderedAmount)}</small></div><div className="stat-card"><span>Dibayar ke pemasok</span><strong>{idr(report.purchases.paidAmount)}</strong></div></div><p className="muted">* Estimasi laba belum memperhitungkan pajak, biaya pembelian, gaji, atau biaya lain yang belum dicatat.</p><div className="table-wrap"><table><thead><tr><th>Produk terlaris</th><th>Unit terjual</th><th>Pendapatan</th><th>Margin kotor*</th></tr></thead><tbody>{report.bestsellers.map((item) => <tr key={item.productId}><td>{item.productName}</td><td>{item.unitsSold}</td><td>{idr(item.revenue)}</td><td>{idr(item.grossMargin)}</td></tr>)}</tbody></table></div></>}
     </section>
+  </>
+}
+
+export function ExpensesView() {
+  const today = new Date().toISOString().slice(0, 10)
+  const [from, setFrom] = useState(today.slice(0, 8) + '01')
+  const [to, setTo] = useState(today)
+  const [expenses, setExpenses] = useState([])
+  const [form, setForm] = useState({ description: '', category: 'Operasional', amount: '', paymentMethod: 'cash', reference: '', notes: '' })
+  const [error, setError] = useState('')
+  const [refresh, setRefresh] = useState(0)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    let active = true
+    api(`/expenses?from=${from}&to=${to}`).then((result) => { if (active) { setExpenses(result); setError('') } }).catch((cause) => { if (active) setError(cause.message) })
+    return () => { active = false }
+  }, [from, to, refresh])
+  const save = async (event) => {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      await api('/expenses', { method: 'POST', body: JSON.stringify({ ...form, amount: Number(form.amount) }) })
+      setForm({ description: '', category: 'Operasional', amount: '', paymentMethod: 'cash', reference: '', notes: '' })
+      setRefresh((value) => value + 1)
+      setError('')
+    } catch (cause) { setError(cause.message) } finally { setSaving(false) }
+  }
+  const total = expenses.reduce((sum, item) => sum + item.amount, 0)
+  const paymentNames = { cash: 'Tunai', bank_transfer: 'Transfer bank', qris: 'QRIS', card: 'Kartu', other: 'Lainnya' }
+  return <>
+    <header className="topbar"><div><p className="breadcrumb">Finance / <span>Expenses</span></p><h1>Biaya operasional & kas</h1></div><button className="filter-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></header>
+    <section className="welcome-row"><div><p className="muted">Total biaya pada periode ini</p><h2>{idr(total)}</h2><p className="muted">{expenses.length} transaksi terbaru pada periode yang dipilih.</p></div></section>
+    <section className="catalog-panel"><div className="panel-heading"><div><h2>Catat biaya</h2><p className="muted">Catat biaya usaha agar estimasi laba operasional lebih akurat.</p></div></div>{error && <p className="login-error">{error}</p>}<form className="toolbar expense-form" onSubmit={save}><label>Deskripsi<input required maxLength="200" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Contoh: listrik toko" /></label><label>Kategori<input required maxLength="80" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><label>Jumlah (Rp)<input required type="number" min="0.01" step="0.01" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} /></label><label>Metode<select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="card">Kartu</option><option value="other">Lainnya</option></select></label><label>Referensi<input maxLength="120" value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} /></label><label>Catatan<input maxLength="500" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><button className="primary-button" disabled={saving}>{saving ? 'Menyimpan...' : 'Catat biaya'}</button></form></section>
+    <section className="catalog-panel"><div className="panel-heading"><div><h2>Riwayat biaya</h2></div></div><div className="toolbar"><label>Dari<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Sampai<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Deskripsi</th><th>Kategori</th><th>Metode</th><th>Referensi</th><th>Dicatat oleh</th><th>Jumlah</th></tr></thead><tbody>{expenses.map((item) => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleDateString('id-ID')}</td><td>{item.description}</td><td>{item.category}</td><td>{paymentNames[item.paymentMethod] || item.paymentMethod}</td><td>{item.reference || '—'}</td><td>{item.recordedByName || '—'}</td><td className="price">{idr(item.amount)}</td></tr>)}{!expenses.length && <tr><td colSpan="7" className="empty-state">Belum ada biaya pada periode ini.</td></tr>}</tbody></table></div></section>
+  </>
+}
+
+export function BackupView({ onRestored }) {
+  const [error, setError] = useState('')
+  const [status, setStatus] = useState('')
+  const [busy, setBusy] = useState(false)
+  const exportBackup = async () => {
+    setBusy(true); setError(''); setStatus('')
+    try {
+      const response = await fetch(`${API_URL}/backup`, { headers: headers() })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.message || 'Backup gagal diunduh.')
+      const link = document.createElement('a')
+      const url = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }))
+      link.href = url; link.download = `ifal-store-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click()
+      URL.revokeObjectURL(url)
+      setStatus('Backup berhasil diunduh. Simpan file di lokasi yang aman.')
+    } catch (cause) { setError(cause.message || 'Backup gagal diunduh.') } finally { setBusy(false) }
+  }
+  const restoreBackup = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    event.target.value = ''
+    if (file.size > 50 * 1024 * 1024) { setError('Ukuran backup maksimal 50 MB.'); return }
+    if (!window.confirm('Pemulihan akan MENGGANTI seluruh data aplikasi saat ini dengan isi file backup. Pastikan file benar dan berisi akun admin aktif. Lanjutkan?')) return
+    setBusy(true); setError(''); setStatus('')
+    try {
+      const backup = JSON.parse(await file.text())
+      const result = await api('/backup/restore', { method: 'POST', body: JSON.stringify(backup) })
+      setStatus(result.message)
+      window.setTimeout(onRestored, 1200)
+    } catch (cause) { setError(cause instanceof SyntaxError ? 'File bukan JSON backup yang valid.' : cause.message || 'Pemulihan gagal.') } finally { setBusy(false) }
+  }
+  return <>
+    <header className="topbar"><div><p className="breadcrumb">Administration / <span>Backup</span></p><h1>Backup & pemulihan data</h1></div></header>
+    <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Cadangkan data</h2><p className="muted">Unduh snapshot seluruh data aplikasi dalam format JSON untuk disimpan secara aman.</p></div></div><div className="toolbar"><button className="primary-button" onClick={exportBackup} disabled={busy}><Save size={16} /> {busy ? 'Memproses...' : 'Unduh backup'}</button></div></section>
+    <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Pulihkan dari backup</h2><p className="muted">Pilih file JSON backup Ifal Store. Pemulihan mengganti seluruh data saat ini dan Anda akan diminta masuk kembali.</p></div></div><div className="toolbar"><label className="secondary-button backup-upload"><Upload size={16} /> Pilih file backup<input type="file" accept="application/json,.json" onChange={restoreBackup} disabled={busy} /></label></div></section>
+    {error && <p className="login-error">{error}</p>}{status && <p className="muted backup-status">{status}</p>}
+    <section className="catalog-panel backup-warning"><strong>Perhatian keamanan & pemulihan</strong><p>File backup berisi data usaha dan hash kata sandi akun (OTP sementara tidak disimpan). Batasi akses file dan jangan kirim melalui kanal publik. Proses pemulihan tidak dapat dibatalkan; buat backup terbaru sebelum menjalankannya.</p></section>
   </>
 }
 

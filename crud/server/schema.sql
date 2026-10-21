@@ -326,3 +326,18 @@ CREATE TABLE IF NOT EXISTS supplier_return_items (
   quantity INTEGER NOT NULL CHECK (quantity > 0),
   unit_cost NUMERIC(12,2) NOT NULL CHECK (unit_cost >= 0)
 );
+
+CREATE TABLE IF NOT EXISTS operating_expenses (
+  id BIGSERIAL PRIMARY KEY,
+  description VARCHAR(200) NOT NULL,
+  category VARCHAR(80) NOT NULL,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  payment_method VARCHAR(24) NOT NULL CHECK (payment_method IN ('cash', 'bank_transfer', 'qris', 'card', 'other')),
+  reference VARCHAR(120),
+  notes VARCHAR(500),
+  recorded_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  recorded_by_name VARCHAR(120),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS operating_expenses_created_at_idx ON operating_expenses(created_at DESC);
