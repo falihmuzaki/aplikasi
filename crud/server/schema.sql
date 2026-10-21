@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS contact_name VARCHAR(120);
+
 CREATE INDEX IF NOT EXISTS suppliers_name_idx ON suppliers(name);
 
 CREATE TABLE IF NOT EXISTS purchase_orders (
