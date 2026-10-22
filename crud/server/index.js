@@ -234,11 +234,16 @@ function normalizeSalesOrder(row) {
   const paidAmount = Math.round(Number(row.paid_amount || 0) * 100) / 100
   const refundedAmount = Math.round(Number(row.refunded_amount || 0) * 100) / 100
   const payments = (row.payments || []).map((payment) => ({ ...payment, amount: Number(payment.amount) }))
-  const totalAmount = row.status === 'cancelled' ? 0 : Math.round(items.reduce((sum, item) => sum + (item.quantity - item.returnedQuantity) * item.unitPrice, 0) * 100) / 100
+  const discountRate = Number(row.discount_rate || 0)
+  const taxRate = Number(row.tax_rate || 0)
+  const subtotalCents = items.reduce((sum, item) => sum + BigInt(Math.round(item.unitPrice * 100)) * BigInt(item.quantity - item.returnedQuantity), 0n)
+  const totals = calculateSaleTotals(subtotalCents, discountRate, taxRate)
+  const totalAmount = row.status === 'cancelled' ? 0 : totals.totalAmount
   const netPaid = paidAmount - refundedAmount
   const refundDue = Math.round(Math.max(0, netPaid - totalAmount) * 100) / 100
   let paymentStatus = 'unpaid'
-  if (refundedAmount > 0 && netPaid <= 0) paymentStatus = 'refunded'
+  if (row.status !== 'cancelled' && totalAmount === 0) paymentStatus = 'paid'
+  else if (refundedAmount > 0 && netPaid <= 0) paymentStatus = 'refunded'
   else if (refundDue > 0 && refundedAmount > 0) paymentStatus = 'partially_refunded'
   else if (refundDue > 0) paymentStatus = 'refund_due'
   else if (totalAmount > 0 && netPaid >= totalAmount) paymentStatus = 'paid'
@@ -259,6 +264,11 @@ function normalizeSalesOrder(row) {
     createdByName: row.created_by_name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    discountRate,
+    taxRate,
+    subtotal: row.status === 'cancelled' ? 0 : totals.subtotal,
+    discountAmount: row.status === 'cancelled' ? 0 : totals.discountAmount,
+    taxAmount: row.status === 'cancelled' ? 0 : totals.taxAmount,
     totalAmount,
     paidAmount,
     refundedAmount,
@@ -267,6 +277,20 @@ function normalizeSalesOrder(row) {
     paymentStatus,
     payments,
     items,
+  }
+}
+
+function calculateSaleTotals(subtotalCents, discountRate, taxRate) {
+  const discountBasisPoints = BigInt(Math.round(discountRate * 100))
+  const taxBasisPoints = BigInt(Math.round(taxRate * 100))
+  const discountCents = (subtotalCents * discountBasisPoints + 5000n) / 10000n
+  const taxableCents = subtotalCents - discountCents
+  const taxCents = (taxableCents * taxBasisPoints + 5000n) / 10000n
+  return {
+    subtotal: Number(subtotalCents) / 100,
+    discountAmount: Number(discountCents) / 100,
+    taxAmount: Number(taxCents) / 100,
+    totalAmount: Number(taxableCents + taxCents) / 100,
   }
 }
 
@@ -871,13 +895,14 @@ app.get('/api/reports', requireAuth, requireAdmin, async (request, response, nex
     const to = String(request.query.to || '')
     if ((from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) || (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))) return response.status(400).json({ message: 'Format tanggal laporan harus YYYY-MM-DD.' })
     const sales = await pool.query(`
-      SELECT COUNT(*)::int AS order_count,
-        COALESCE(SUM((SELECT SUM((quantity-returned_quantity)*unit_price) FROM sales_order_items WHERE sales_order_id=so.id)),0)::numeric AS revenue,
-        COALESCE(SUM((SELECT SUM((quantity-returned_quantity)*(unit_price-unit_cost)) FROM sales_order_items WHERE sales_order_id=so.id)),0)::numeric AS gross_margin,
-        COALESCE(SUM((SELECT SUM(amount) FROM sales_payments WHERE sales_order_id=so.id AND kind='payment')),0)::numeric AS payments,
-        COALESCE(SUM((SELECT SUM(amount) FROM sales_payments WHERE sales_order_id=so.id AND kind='refund')),0)::numeric AS refunds
-      FROM sales_orders so
+      SELECT so.id, so.discount_rate, so.tax_rate,
+        COALESCE(SUM((soi.quantity-soi.returned_quantity)*soi.unit_price),0)::numeric AS subtotal,
+        COALESCE(SUM((soi.quantity-soi.returned_quantity)*soi.unit_cost),0)::numeric AS cost,
+        COALESCE((SELECT SUM(amount) FROM sales_payments WHERE sales_order_id=so.id AND kind='payment'),0)::numeric AS payments,
+        COALESCE((SELECT SUM(amount) FROM sales_payments WHERE sales_order_id=so.id AND kind='refund'),0)::numeric AS refunds
+      FROM sales_orders so LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
       WHERE so.status<>'cancelled' AND ($1='' OR so.created_at::date >= $1::date) AND ($2='' OR so.created_at::date <= $2::date)
+      GROUP BY so.id
     `, [from, to])
     const purchases = await pool.query(`
       SELECT COUNT(*)::int AS order_count,
@@ -893,15 +918,26 @@ app.get('/api/reports', requireAuth, requireAdmin, async (request, response, nex
     `, [from, to])
     const bestsellers = await pool.query(`
       SELECT soi.product_id, soi.product_name, SUM(soi.quantity-soi.returned_quantity)::int AS units_sold,
-        SUM((soi.quantity-soi.returned_quantity)*soi.unit_price)::numeric AS revenue,
-        SUM((soi.quantity-soi.returned_quantity)*(soi.unit_price-soi.unit_cost))::numeric AS gross_margin
+        SUM((soi.quantity-soi.returned_quantity)*soi.unit_price*(1-so.discount_rate/100))::numeric AS revenue,
+        SUM((soi.quantity-soi.returned_quantity)*(soi.unit_price*(1-so.discount_rate/100)-soi.unit_cost))::numeric AS gross_margin
       FROM sales_order_items soi JOIN sales_orders so ON so.id=soi.sales_order_id
       WHERE so.status<>'cancelled' AND ($1='' OR so.created_at::date >= $1::date) AND ($2='' OR so.created_at::date <= $2::date)
       GROUP BY soi.product_id, soi.product_name ORDER BY units_sold DESC, revenue DESC LIMIT 10
     `, [from, to])
-    const grossMargin = Number(sales.rows[0].gross_margin)
+    const salesTotals = sales.rows.reduce((totals, row) => {
+      const subtotalCents = BigInt(Math.round(Number(row.subtotal) * 100))
+      const orderTotals = calculateSaleTotals(subtotalCents, Number(row.discount_rate), Number(row.tax_rate))
+      totals.revenue += orderTotals.subtotal - orderTotals.discountAmount
+      totals.discountAmount += orderTotals.discountAmount
+      totals.taxAmount += orderTotals.taxAmount
+      totals.grossMargin += orderTotals.subtotal - orderTotals.discountAmount - Number(row.cost)
+      totals.payments += Number(row.payments)
+      totals.refunds += Number(row.refunds)
+      return totals
+    }, { revenue: 0, discountAmount: 0, taxAmount: 0, grossMargin: 0, payments: 0, refunds: 0 })
+    const grossMargin = salesTotals.grossMargin
     const operatingExpenses = Number(expenses.rows[0].total)
-    response.json({ from: from || null, to: to || null, sales: { orderCount: sales.rows[0].order_count, revenue: Number(sales.rows[0].revenue), grossMargin, payments: Number(sales.rows[0].payments), refunds: Number(sales.rows[0].refunds) }, purchases: { orderCount: purchases.rows[0].order_count, orderedAmount: Number(purchases.rows[0].ordered_amount), paidAmount: Number(purchases.rows[0].paid_amount) }, expenses: { entryCount: expenses.rows[0].entry_count, total: operatingExpenses }, estimatedNetProfit: grossMargin - operatingExpenses, bestsellers: bestsellers.rows.map((row) => ({ productId: Number(row.product_id), productName: row.product_name, unitsSold: row.units_sold, revenue: Number(row.revenue), grossMargin: Number(row.gross_margin) })) })
+    response.json({ from: from || null, to: to || null, sales: { orderCount: sales.rowCount, revenue: salesTotals.revenue, discountAmount: salesTotals.discountAmount, taxAmount: salesTotals.taxAmount, grossMargin, payments: salesTotals.payments, refunds: salesTotals.refunds }, purchases: { orderCount: purchases.rows[0].order_count, orderedAmount: Number(purchases.rows[0].ordered_amount), paidAmount: Number(purchases.rows[0].paid_amount) }, expenses: { entryCount: expenses.rows[0].entry_count, total: operatingExpenses }, estimatedNetProfit: grossMargin - operatingExpenses, bestsellers: bestsellers.rows.map((row) => ({ productId: Number(row.product_id), productName: row.product_name, unitsSold: row.units_sold, revenue: Number(row.revenue), grossMargin: Number(row.gross_margin) })) })
   } catch (error) { next(error) }
 })
 
@@ -1798,6 +1834,8 @@ app.get('/api/receivables', requireAuth, async (_request, response, next) => {
 app.post('/api/sales', requireAuth, async (request, response, next) => {
   const { customerId, items, notes = '' } = request.body || {}
   const checkoutPaymentMethod = request.body?.checkoutPaymentMethod || null
+  const discountRate = Number(request.body?.discountRate ?? 0)
+  const taxRate = Number(request.body?.taxRate ?? 0)
   const requestedWarehouseId = Number(request.body?.warehouseId || 0)
   const normalizedCustomerId = customerId === null || customerId === undefined || customerId === '' ? null : Number(customerId)
   if (normalizedCustomerId !== null && (!Number.isSafeInteger(normalizedCustomerId) || normalizedCustomerId < 1)) return response.status(400).json({ message: 'Pelanggan tidak valid.' })
@@ -1811,6 +1849,7 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
   }
   if (new Set(normalizedItems.map((item) => item.productId)).size !== normalizedItems.length) return response.status(400).json({ message: 'Produk yang sama tidak boleh ditambahkan lebih dari sekali.' })
   if (String(notes).length > 2000) return response.status(400).json({ message: 'Catatan maksimal 2.000 karakter.' })
+  if (![discountRate, taxRate].every((rate) => Number.isFinite(rate) && rate >= 0 && rate <= 100 && Math.abs(rate * 100 - Math.round(rate * 100)) < 1e-8)) return response.status(400).json({ message: 'Diskon dan pajak harus berupa persentase antara 0 dan 100 dengan maksimal 2 angka desimal.' })
   if (checkoutPaymentMethod !== null && checkoutPaymentMethod !== 'cash') return response.status(400).json({ message: 'Metode pembayaran checkout tidak valid.' })
 
   const client = await pool.connect()
@@ -1839,8 +1878,8 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
     const customer = customerResult.rows[0]
     const orderResult = await client.query(
-      'INSERT INTO sales_orders (customer_id, customer_name, customer_email, customer_phone, warehouse_id, notes, created_by, created_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at',
-      [customer.id, customer.name, customer.email, customer.phone, warehouseId, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null],
+      'INSERT INTO sales_orders (customer_id, customer_name, customer_email, customer_phone, warehouse_id, notes, created_by, created_by_name, discount_rate, tax_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, created_at',
+      [customer.id, customer.name, customer.email, customer.phone, warehouseId, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null, discountRate, taxRate],
     )
     const order = orderResult.rows[0]
     const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
@@ -1848,7 +1887,7 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     const invoiceNumber = orderNumber.replace(/^SO-/, 'INV-')
     await client.query('UPDATE sales_orders SET order_number=$1, invoice_number=$2 WHERE id=$3', [orderNumber, invoiceNumber, order.id])
 
-    let checkoutTotalCents = 0n
+    let checkoutSubtotalCents = 0n
     for (const item of normalizedItems.sort((a, b) => a.productId - b.productId)) {
       const productResult = await client.query(
         `SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches,
@@ -1862,13 +1901,11 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
         return response.status(400).json({ message: `Produk dengan ID ${item.productId} tidak ditemukan atau sudah diarsipkan.` })
       }
       const product = productResult.rows[0]
-      if (checkoutPaymentMethod === 'cash') {
-        const [wholePrice, fractionalPrice = ''] = String(product.price).split('.')
-        checkoutTotalCents += (BigInt(wholePrice) * 100n + BigInt(fractionalPrice.padEnd(2, '0'))) * BigInt(item.quantity)
-        if (checkoutTotalCents > 999_999_999_999n) {
-          await client.query('ROLLBACK')
-          return response.status(400).json({ message: 'Total checkout melebihi batas nominal transaksi.' })
-        }
+      const [wholePrice, fractionalPrice = ''] = String(product.price).split('.')
+      checkoutSubtotalCents += (BigInt(wholePrice) * 100n + BigInt(fractionalPrice.padEnd(2, '0'))) * BigInt(item.quantity)
+      if (checkoutSubtotalCents > 999_999_999_999n) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Total transaksi melebihi batas nominal.' })
       }
       const warehouseStockResult = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [warehouseId, product.id])
       const warehouseStock = warehouseStockResult.rows[0]?.stock || 0
@@ -1906,7 +1943,12 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
         [product.id, warehouseId, request.userId, userResult.rows[0]?.name ?? null, -item.quantity, warehouseStock, warehouseStockAfter, `Sale ${orderNumber}`],
       )
     }
-    if (checkoutPaymentMethod === 'cash') {
+    const checkoutTotalCents = BigInt(Math.round(calculateSaleTotals(checkoutSubtotalCents, discountRate, taxRate).totalAmount * 100))
+    if (checkoutTotalCents > 999_999_999_999n) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Total transaksi melebihi batas nominal.' })
+    }
+    if (checkoutPaymentMethod === 'cash' && checkoutTotalCents > 0n) {
       const checkoutTotal = `${checkoutTotalCents / 100n}.${String(checkoutTotalCents % 100n).padStart(2, '0')}`
       await client.query(
         "INSERT INTO sales_payments (sales_order_id, kind, amount, method, notes, recorded_by, recorded_by_name, cash_session_id) VALUES ($1,'payment',$2,'cash','POS checkout',$3,$4,$5)",
@@ -1945,14 +1987,14 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
         return response.status(409).json({ message: 'Buka sesi kas harian sebelum mencatat pembayaran atau refund tunai.' })
       }
     }
-    const orderResult = await client.query('SELECT id, status FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    const orderResult = await client.query('SELECT id, status, discount_rate, tax_rate FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
     if (!orderResult.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Invoice tidak ditemukan.' })
     }
     const order = orderResult.rows[0]
     const amountResult = await client.query(`
-      SELECT COALESCE(SUM((quantity-returned_quantity)*unit_price), 0) AS total_amount
+      SELECT COALESCE(SUM((quantity-returned_quantity)*unit_price), 0) AS subtotal
       FROM sales_order_items
       WHERE sales_order_id=$1
     `, [order.id])
@@ -1963,7 +2005,11 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
       FROM sales_payments
       WHERE sales_order_id=$1
     `, [order.id])
-    const totalAmount = order.status === 'cancelled' ? 0 : Number(amountResult.rows[0].total_amount)
+    const totalAmount = order.status === 'cancelled' ? 0 : calculateSaleTotals(
+      BigInt(Math.round(Number(amountResult.rows[0].subtotal) * 100)),
+      Number(order.discount_rate),
+      Number(order.tax_rate),
+    ).totalAmount
     const paidAmount = Number(paymentResult.rows[0].paid_amount)
     const refundedAmount = Number(paymentResult.rows[0].refunded_amount)
     const netPaid = paidAmount - refundedAmount
