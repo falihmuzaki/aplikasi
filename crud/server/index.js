@@ -245,19 +245,25 @@ function normalizeSalesOrder(row) {
   }
 }
 
+function getProductStatus(stock, threshold) {
+  return stock <= 0 ? 'Out of stock' : stock <= threshold ? 'Low stock' : 'Active'
+}
+
 function normalizeProduct(row) {
+  const stock = Number(row.stock)
+  const lowStockThreshold = Number(row.low_stock_threshold)
   return {
     id: Number(row.id),
     name: row.name,
     category: row.category,
     price: Number(row.price),
-    stock: row.stock,
-    status: row.status,
+    stock,
+    status: getProductStatus(stock, lowStockThreshold),
     media: row.media_url ? { name: row.media_name, type: row.media_type, url: row.media_url } : null,
     sku: row.sku ?? null,
     barcode: row.barcode ?? null,
     trackBatches: row.track_batches ?? false,
-    lowStockThreshold: row.low_stock_threshold,
+    lowStockThreshold,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -265,7 +271,8 @@ function normalizeProduct(row) {
 
 function productValues(body) {
   const stock = Number(body.stock) || 0
-  return [body.name, body.category, Number(body.price) || 0, stock, stock === 0 ? 'Out of stock' : body.status || 'Active', body.media?.name || null, body.media?.type || null, body.media?.url || null, Math.max(0, Number.parseInt(body.lowStockThreshold, 10) || 5)]
+  const lowStockThreshold = Math.max(0, Number.parseInt(body.lowStockThreshold, 10) || 5)
+  return [body.name, body.category, Number(body.price) || 0, stock, getProductStatus(stock, lowStockThreshold), body.media?.name || null, body.media?.type || null, body.media?.url || null, lowStockThreshold]
 }
 
 function isValidStockQuantity(stock) {
@@ -2011,7 +2018,7 @@ app.post('/api/sales/:id/return', requireAuth, async (request, response, next) =
       }
       const stockAfter = line.stock + item.quantity
       const warehouseStockAfter = warehouseStock + item.quantity
-      const status = stockAfter <= line.low_stock_threshold ? 'Low stock' : 'Active'
+      const status = stockAfter === 0 ? 'Out of stock' : stockAfter <= line.low_stock_threshold ? 'Low stock' : 'Active'
       await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, line.product_id])
       await client.query('INSERT INTO warehouse_stocks (warehouse_id, product_id, stock) VALUES ($1,$2,$3) ON CONFLICT (warehouse_id, product_id) DO UPDATE SET stock=EXCLUDED.stock', [order.warehouse_id, line.product_id, warehouseStockAfter])
       if (line.track_batches) {
@@ -2093,7 +2100,7 @@ app.post('/api/sales/:id/cancel', requireAuth, async (request, response, next) =
       }
       const stockAfter = line.stock + quantity
       const warehouseStockAfter = warehouseStock + quantity
-      const status = stockAfter <= line.low_stock_threshold ? 'Low stock' : 'Active'
+      const status = stockAfter === 0 ? 'Out of stock' : stockAfter <= line.low_stock_threshold ? 'Low stock' : 'Active'
       await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, line.product_id])
       await client.query('INSERT INTO warehouse_stocks (warehouse_id, product_id, stock) VALUES ($1,$2,$3) ON CONFLICT (warehouse_id, product_id) DO UPDATE SET stock=EXCLUDED.stock', [order.warehouse_id, line.product_id, warehouseStockAfter])
       if (line.track_batches) {
