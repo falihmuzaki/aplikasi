@@ -268,6 +268,10 @@ function productValues(body) {
   return [body.name, body.category, Number(body.price) || 0, stock, stock === 0 ? 'Out of stock' : body.status || 'Active', body.media?.name || null, body.media?.type || null, body.media?.url || null, Math.max(0, Number.parseInt(body.lowStockThreshold, 10) || 5)]
 }
 
+function isValidStockQuantity(stock) {
+  return Number.isSafeInteger(stock) && stock >= 0 && stock <= 2_147_483_647
+}
+
 function generateSku() {
   return 'SKU-' + Date.now().toString(36).toUpperCase() + '-' + crypto.randomBytes(2).toString('hex').toUpperCase()
 }
@@ -343,11 +347,14 @@ function requireAuth(request, response, next) {
 // client can't forge privilege. requireAdmin runs AFTER requireAuth (request.userId set)
 // and reads the authoritative role from the DB with a parameterized query. Any user that
 // isn't an active admin (including a missing/inactive row) gets 403.
+async function isActiveAdmin(userId) {
+  const result = await pool.query('SELECT role FROM users WHERE id=$1 AND is_active=TRUE', [userId])
+  return result.rows[0]?.role === 'admin'
+}
+
 async function requireAdmin(request, response, next) {
   try {
-    const result = await pool.query('SELECT role FROM users WHERE id=$1 AND is_active=TRUE', [request.userId])
-    const user = result.rows[0]
-    if (!user || user.role !== 'admin') return response.status(403).json({ message: 'Akses ditolak. Hanya admin yang diizinkan.' })
+    if (!(await isActiveAdmin(request.userId))) return response.status(403).json({ message: 'Akses ditolak. Hanya admin yang diizinkan.' })
     next()
   } catch (error) { next(error) }
 }
@@ -626,7 +633,7 @@ app.get('/api/warehouses/:id/stock', requireAuth, async (request, response, next
   } catch (error) { next(error) }
 })
 
-app.post('/api/stock-transfers', requireAuth, async (request, response, next) => {
+app.post('/api/stock-transfers', requireAuth, requireAdmin, async (request, response, next) => {
   const sourceWarehouseId = Number(request.body.sourceWarehouseId)
   const destinationWarehouseId = Number(request.body.destinationWarehouseId)
   const productId = Number(request.body.productId)
@@ -695,7 +702,7 @@ app.get('/api/stocktakes', requireAuth, async (_request, response, next) => {
   } catch (error) { next(error) }
 })
 
-app.post('/api/stocktakes', requireAuth, async (request, response, next) => {
+app.post('/api/stocktakes', requireAuth, requireAdmin, async (request, response, next) => {
   const warehouseId = Number(request.body.warehouseId)
   const items = Array.isArray(request.body.items) ? request.body.items : []
   if (!Number.isSafeInteger(warehouseId) || warehouseId < 1 || !items.length || items.length > 5000) return response.status(400).json({ message: 'Pilih gudang dan minimal satu item stok opname.' })
@@ -729,7 +736,7 @@ app.post('/api/stocktakes', requireAuth, async (request, response, next) => {
   } finally { client.release() }
 })
 
-app.post('/api/stocktakes/:id/complete', requireAuth, async (request, response, next) => {
+app.post('/api/stocktakes/:id/complete', requireAuth, requireAdmin, async (request, response, next) => {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -1030,6 +1037,14 @@ app.post('/api/products', requireAuth, async (request, response, next) => {
     await client.query('BEGIN')
     const values = productValues(request.body)
     const stock = values[3]
+    if (!isValidStockQuantity(stock)) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Stok harus berupa bilangan bulat nonnegatif.' })
+    }
+    if (stock !== 0 && !(await isActiveAdmin(request.userId))) {
+      await client.query('ROLLBACK')
+      return response.status(403).json({ message: 'Stok awal hanya dapat diatur oleh admin. Staf dapat mencatat stok melalui transaksi pembelian.' })
+    }
     const barcode = String(request.body.barcode || '').trim() || null
     if (barcode && barcode.length > 120) {
       await client.query('ROLLBACK')
@@ -1089,6 +1104,14 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
     const oldStock = existing.rows[0].stock
     const values = productValues(request.body)
     const newStock = values[3]
+    if (!isValidStockQuantity(newStock)) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Stok harus berupa bilangan bulat nonnegatif.' })
+    }
+    if (newStock !== oldStock && !(await isActiveAdmin(request.userId))) {
+      await client.query('ROLLBACK')
+      return response.status(403).json({ message: 'Perubahan stok manual hanya dapat dilakukan oleh admin. Staf dapat mencatat stok melalui transaksi pembelian atau penjualan.' })
+    }
     const barcode = String(request.body.barcode || '').trim() || null
     if (barcode && barcode.length > 120) {
       await client.query('ROLLBACK')
@@ -1188,6 +1211,10 @@ app.post('/api/products/bulk', requireAuth, async (request, response) => {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    if (products.some((product) => Number(product?.stock) > 0) && !(await isActiveAdmin(request.userId))) {
+      await client.query('ROLLBACK')
+      return response.status(403).json({ message: 'Impor produk dengan stok awal hanya dapat dilakukan oleh admin.' })
+    }
     const userResult = await client.query('SELECT name FROM users WHERE id=$1', [request.userId])
     const userName = userResult.rows[0]?.name ?? null
     const rows = []
@@ -1196,6 +1223,7 @@ app.post('/api/products/bulk', requireAuth, async (request, response) => {
       try {
         const values = productValues(body)
         const stock = values[3]
+        if (!isValidStockQuantity(stock)) throw new Error('Stok harus berupa bilangan bulat nonnegatif.')
         const provided = String(body.sku || '').trim()
         let row
         let attempts = provided ? 1 : 5

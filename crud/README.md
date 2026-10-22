@@ -119,4 +119,6 @@ Penegakan di dua lapis:
 - **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`.
 - **Frontend**: menu dan tampilan **Users** disembunyikan untuk staff, dan aplikasi tidak memanggil `GET /api/users` untuk staff. Staff diarahkan ke tampilan products secara default.
 
-Admin dan staff sama-sama dapat melihat/mengubah products serta mengelola alur purchase orders dan sales orders. Penerimaan pembelian dan retur/pembatalan penjualan menambah stok; penjualan menguranginya. Semua dicatat pada stock log.
+Admin dan staff sama-sama dapat melihat/mengelola informasi produk serta menjalankan alur purchase orders dan sales orders. Staf tidak dapat menetapkan stok awal atau mengubah stok langsung di formulir produk/impor; perubahan stok dari transaksi pembelian/penjualan tetap mengikuti alur transaksi normal. Transfer antar gudang, stok opname yang menerapkan selisih, pembuatan gudang, dan penghapusan permanen produk hanya dapat dilakukan admin. Staf tetap dapat melihat daftar gudang, stok per gudang, dan riwayat stok opname.
+
+Pembatasan stok ditegakkan di backend: endpoint produk menolak perubahan stok langsung oleh staf, endpoint impor menolak stok awal positif, dan endpoint transfer/stok opname mensyaratkan role admin aktif. UI juga menyembunyikan kontrol yang tidak dapat digunakan staf.
