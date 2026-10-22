@@ -1,0 +1,392 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Konsolidasi fondasi token pada `:root`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643710710
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643722775
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643954945
+      }
+    ],
+    "2.1 Terapkan peran tipografi konsisten pada elemen dasar dan *Kelas_Kontrak*": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643712153
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643960784
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792649606851
+      }
+    ],
+    "3.1 Konversi literal hex/rgb/hsl pada aturan *Kelas_Kontrak* ke `var(--token)`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643712320
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792649613486
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650056259
+      }
+    ],
+    "4.1 Terapkan warna *Palet_Aktif* dan skala spacing pada ketiga area": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643712392
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650063552
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650556307
+      }
+    ],
+    "5.1 Seragamkan border, radius, dan shadow kartu statistik": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643712548
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650561161
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650757683
+      }
+    ],
+    "6.1 Seragamkan padding sel dan garis pemisah baris": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643712709
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650761600
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650937975
+      }
+    ],
+    "7.1 Terapkan radius/shadow token dan pertahankan urutan penumpukan": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643712844
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650942353
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651138231
+      }
+    ],
+    "8.1 Terapkan latar yang saling berbeda via token": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713006
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651142267
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651491862
+      }
+    ],
+    "9.1 Bedakan warna tiap nilai status dan pertahankan pembeda non-warna": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713108
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651496402
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651765193
+      }
+    ],
+    "10.1 Terapkan token & spacing dan konsolidasikan duplikasi `.feature-launcher`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713172
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651769566
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652272561
+      }
+    ],
+    "11.1 Terapkan hover, active (pressed), dan disabled yang konsisten": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713234
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652277842
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652547804
+      }
+    ],
+    "11.2 Tegaskan indikator focus-visible dan pertahankan `prefers-reduced-motion`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713292
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652553116
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652834427
+      }
+    ],
+    "12.1 Pastikan pasangan teks/latar memenuhi ambang kontras": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713384
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652839989
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792653743750
+      }
+    ],
+    "13.1 Jaga semua breakpoint dan perilaku responsif": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713465
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792653748056
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654018671
+      }
+    ],
+    "14.1 Pertahankan `@media print` untuk invoice dan laporan": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713563
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654023871
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654223515
+      }
+    ],
+    "15. Checkpoint - Pastikan semua tes/verifikasi lolos": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713658
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654235340
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654441243
+      }
+    ],
+    "16.1 Jalankan build dan lint serta pemeriksaan non-regresi statis": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792643713723
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654447558
+      },
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654860111
+      }
+    ],
+    "2. Lapisan tipografi dasar": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792649606944
+      }
+    ],
+    "3. Ganti nilai warna literal menjadi `var(--token)`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650056383
+      }
+    ],
+    "4. Rapikan sidebar, topbar, dan welcome row": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650556451
+      }
+    ],
+    "5. Konsistenkan kartu statistik `.stats-grid` / `.stat-card`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650757739
+      }
+    ],
+    "6. Rapikan panel katalog dan tabel `.catalog-panel`, `table`, `th`, `td`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792650938092
+      }
+    ],
+    "7. Tata modal dan backdrop `.modal` / `.modal-backdrop`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651138317
+      }
+    ],
+    "8. Bedakan tombol `.primary-button`, `.secondary-button`, `.danger-button`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651491951
+      }
+    ],
+    "9. Tata badge `.status`, `.role-badge`, `.purchase-status`": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792651765337
+      }
+    ],
+    "10. Rapikan toast, notif-panel, login, feature-launcher/overlay": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652272727
+      }
+    ],
+    "11. Standarisasi state interaktif": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792652834535
+      }
+    ],
+    "12. Periksa dan sesuaikan kontras WCAG": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792653743862
+      }
+    ],
+    "13. Pertahankan responsivitas lintas breakpoint": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654018838
+      }
+    ],
+    "14. Pastikan print-safety tetap utuh": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654223653
+      }
+    ],
+    "16. Verifikasi non-regresi akhir": [
+      {
+        "executionId": "bdc142e2-60e0-40b3-b716-7684c6431fa6",
+        "chatSessionId": "sess_8a78815f-7f7d-4a80-a79e-8060dbd774b9",
+        "timestamp": 1792654860200
+      }
+    ]
+  }
+}
