@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CirclePlus, Printer, RefreshCw, Save, Truck, Upload } from 'lucide-react'
+import { CirclePlus, Printer, RefreshCw, Save, Truck, Upload, X } from 'lucide-react'
 
 const API_URL = 'http://localhost:3001/api'
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
@@ -254,26 +254,51 @@ export function ReceivablesView({ _onToast }) {
   </>
 }
 
-export function RestockView({ _onToast }) {
+export function RestockView({ suppliers, onCreatePurchase }) {
   const [refresh, setRefresh] = useState(0)
   const [items, , error] = useLoad('/restock-recommendations', refresh)
+  const [selectedGroup, setSelectedGroup] = useState(null)
+  const [supplierId, setSupplierId] = useState('')
+  const [purchaseItems, setPurchaseItems] = useState([])
+  const [saving, setSaving] = useState(false)
+  const openPurchase = (group) => {
+    setSelectedGroup(group)
+    setSupplierId(String(suppliers[0]?.id || ''))
+    setPurchaseItems(group.items.map((item) => ({ productId: item.productId, name: item.name, quantity: String(item.suggestedQuantity), unitCost: String(item.lastUnitCost ?? 0), hasCostHistory: item.lastUnitCost !== null })))
+  }
+  const updateItem = (index, key, value) => setPurchaseItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item))
+  const submitPurchase = async (event) => {
+    event.preventDefault()
+    setSaving(true)
+    const ok = await onCreatePurchase({
+      supplierId: Number(supplierId),
+      warehouseId: selectedGroup.warehouseId,
+      notes: 'Pesanan dibuat dari rekomendasi restock.',
+      items: purchaseItems.map((item) => ({ productId: item.productId, quantity: Number(item.quantity), unitCost: Number(item.unitCost) })),
+    })
+    setSaving(false)
+    if (ok) setSelectedGroup(null)
+  }
   return <>
     <header className="topbar"><div><p className="breadcrumb">Inventory / <span>Restock</span></p><h1>Peringatan stok & saran restock</h1></div><button className="filter-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></header>
-    <section className="catalog-panel">{error && <p className="login-error">{error}</p>}<div className="table-wrap"><table><thead><tr><th>Produk</th><th>Gudang</th><th>SKU / barcode</th><th>Stok saat ini</th><th>Batas minimum</th><th>Saran pemesanan</th></tr></thead><tbody>{items.map((item) => <tr key={`${item.productId}-${item.warehouseId}`}><td>{item.name}</td><td>{item.warehouseName}</td><td>{item.sku || item.barcode || '—'}</td><td>{item.stock}</td><td>{item.lowStockThreshold}</td><td>{item.suggestedQuantity}</td></tr>)}{!items.length && <tr><td colSpan="6" className="empty-state">Semua produk memiliki stok yang cukup.</td></tr>}</tbody></table></div></section>
+    <section className="catalog-panel">{error && <p className="login-error">{error}</p>}<div className="table-wrap"><table><thead><tr><th>Produk</th><th>Gudang</th><th>SKU / barcode</th><th>Stok saat ini</th><th>Batas minimum</th><th>Saran pemesanan</th><th>Aksi</th></tr></thead><tbody>{items.map((item) => <tr key={`${item.productId}-${item.warehouseId}`}><td>{item.name}</td><td>{item.warehouseName}</td><td>{item.sku || item.barcode || '—'}</td><td>{item.stock}</td><td>{item.lowStockThreshold}</td><td>{item.suggestedQuantity}</td><td><button className="secondary-button" onClick={() => openPurchase({ warehouseId: item.warehouseId, warehouseName: item.warehouseName, items: [item] })} disabled={!suppliers.length}>Buat PO</button></td></tr>)}{!items.length && <tr><td colSpan="7" className="empty-state">Semua produk memiliki stok yang cukup.</td></tr>}</tbody></table></div>{!suppliers.length && items.length > 0 && <p className="muted cash-session-hint">Tambahkan pemasok terlebih dahulu untuk membuat pesanan.</p>}</section>
+    {selectedGroup && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelectedGroup(null)}><form className="modal purchase-modal" onSubmit={submitPurchase}><div className="modal-heading"><div><h2>Tinjau pesanan restock</h2><p className="muted">Gudang tujuan: {selectedGroup.warehouseName}. Periksa jumlah dan harga beli sebelum membuat pesanan.</p></div><button type="button" className="close-button" onClick={() => setSelectedGroup(null)}><X size={19} /></button></div><label>Pemasok<select required value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">Pilih pemasok</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>{purchaseItems.map((item, index) => <div className="purchase-item-form" key={item.productId}><label>Produk<input value={item.name} readOnly /></label><label>Jumlah<input required type="number" min="1" step="1" value={item.quantity} onChange={(event) => updateItem(index, 'quantity', event.target.value)} /></label><label>Harga beli/unit<input required type="number" min="0" step="0.01" value={item.unitCost} onChange={(event) => updateItem(index, 'unitCost', event.target.value)} /></label>{!item.hasCostHistory && <small className="field-hint">Belum ada riwayat biaya beli; isi harga dari pemasok.</small>}</div>)}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSelectedGroup(null)}>Batal</button><button type="submit" className="primary-button" disabled={saving || !supplierId}>{saving ? 'Menyimpan...' : 'Buat pesanan'}</button></div></form></div>}
   </>
 }
 
-export function BatchesView({ products, warehouses, onToast }) {
+export function BatchesView({ products, warehouses, onToast, onRefresh }) {
   const [refresh, setRefresh] = useState(0)
   const [batches, , error] = useLoad('/product-batches', refresh)
+  const [expiryAlerts, , expiryError] = useLoad('/product-batches/expiry-alerts', refresh)
   const [form, setForm] = useState({ productId: '', warehouseId: '', batchNumber: '', serialNumber: '', expiresAt: '', quantity: '1' })
   const [message, setMessage] = useState(error)
   const submit = async (event) => {
     event.preventDefault()
-    try { await api('/product-batches', { method: 'POST', body: JSON.stringify({ ...form, productId: Number(form.productId), warehouseId: Number(form.warehouseId), quantity: Number(form.quantity) }) }); setRefresh((value) => value + 1); setMessage(''); onToast('Batch berhasil ditautkan ke stok tersedia.') } catch (cause) { setMessage(cause.message) }
+    try { await api('/product-batches', { method: 'POST', body: JSON.stringify({ ...form, productId: Number(form.productId), warehouseId: Number(form.warehouseId), quantity: Number(form.quantity) }) }); setRefresh((value) => value + 1); onRefresh(); setMessage(''); onToast('Batch berhasil ditautkan ke stok tersedia.') } catch (cause) { setMessage(cause.message) }
   }
   return <>
     <header className="topbar"><div><p className="breadcrumb">Inventory / <span>Batch tracking</span></p><h1>Batch, serial & kedaluwarsa</h1></div></header>
+    <section className="catalog-panel"><div className="panel-heading"><div><h2>Peringatan kedaluwarsa</h2><p className="muted">Batch yang kedaluwarsa atau akan kedaluwarsa dalam 30 hari, dengan jumlah stok yang masih tersedia.</p></div><span className="status low-stock"><span></span>{expiryAlerts.length} batch</span></div>{expiryError && <p className="login-error">{expiryError}</p>}<div className="table-wrap"><table><thead><tr><th>Produk</th><th>Gudang</th><th>Batch</th><th>Kedaluwarsa</th><th>Sisa waktu</th><th>Qty</th></tr></thead><tbody>{expiryAlerts.map((batch) => <tr key={batch.id}><td>{batch.productName}</td><td>{batch.warehouseName}</td><td>{batch.batchNumber}</td><td>{batch.expiresAt}</td><td><span className={`status ${batch.daysUntilExpiry < 0 ? 'out-of-stock' : 'low-stock'}`}><span></span>{batch.daysUntilExpiry < 0 ? `Lewat ${Math.abs(batch.daysUntilExpiry)} hari` : batch.daysUntilExpiry === 0 ? 'Hari ini' : `${batch.daysUntilExpiry} hari lagi`}</span></td><td>{batch.quantity}</td></tr>)}{!expiryAlerts.length && !expiryError && <tr><td colSpan="6" className="empty-state">Tidak ada batch yang kedaluwarsa dalam 30 hari ke depan.</td></tr>}</tbody></table></div></section>
     <section className="catalog-panel"><div className="panel-heading"><div><h2>Catat batch pada stok tersedia</h2><p className="muted">Aktifkan pelacakan batch pada produk terlebih dahulu. Jumlah batch tidak boleh melebihi stok gudang.</p></div></div>{message && <p className="login-error">{message}</p>}
       <form className="toolbar" onSubmit={submit}><select required value={form.productId} onChange={(event) => setForm({ ...form, productId: event.target.value })}><option value="">Produk terlacak</option>{products.filter((product) => product.trackBatches).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select><select required value={form.warehouseId} onChange={(event) => setForm({ ...form, warehouseId: event.target.value })}><option value="">Gudang</option>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select><input required maxLength="120" placeholder="Nomor batch" value={form.batchNumber} onChange={(event) => setForm({ ...form, batchNumber: event.target.value })} /><input maxLength="120" placeholder="Nomor seri (opsional, qty=1)" value={form.serialNumber} onChange={(event) => setForm({ ...form, serialNumber: event.target.value })} /><input type="date" value={form.expiresAt} onChange={(event) => setForm({ ...form, expiresAt: event.target.value })} /><input required type="number" min="1" step="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /><button className="primary-button">Tambah batch</button></form>
       <div className="table-wrap"><table><thead><tr><th>Produk</th><th>Gudang</th><th>Batch</th><th>Serial</th><th>Kedaluwarsa</th><th>Qty</th></tr></thead><tbody>{batches.map((batch) => <tr key={batch.id}><td>{batch.productName}</td><td>{batch.warehouseName}</td><td>{batch.batchNumber}</td><td>{batch.serialNumber || '—'}</td><td>{batch.expiresAt || '—'}</td><td>{batch.quantity}</td></tr>)}</tbody></table></div>

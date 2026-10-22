@@ -338,6 +338,8 @@ function App() {
   const [warehouses, setWarehouses] = useState([])
   const [warehouseRefresh, setWarehouseRefresh] = useState(0)
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('')
+  const [expiryAlerts, setExpiryAlerts] = useState([])
+  const [expiryAlertRefresh, setExpiryAlertRefresh] = useState(0)
   const [cashSession, setCashSession] = useState(null)
   const [cashSessionRefresh, setCashSessionRefresh] = useState(0)
   const [purchases, setPurchases] = useState([])
@@ -378,6 +380,19 @@ function App() {
     if (!isAuthenticated) return
     fetch(`${API_URL}/warehouses`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('API unavailable'); return response.json() }).then((data) => { setWarehouses(data); setSelectedWarehouseId((current) => current || String(data.find((item) => item.isDefault)?.id || data[0]?.id || '')) }).catch((error) => pushToast('error', error.message || 'Gagal memuat gudang.'))
   }, [isAuthenticated, warehouseRefresh])
+  useEffect(() => {
+    if (!isAuthenticated) return
+    let active = true
+    fetch(`${API_URL}/product-batches/expiry-alerts`, { headers: authHeaders() })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.message || 'Gagal memuat peringatan kedaluwarsa.')
+        return result
+      })
+      .then((data) => { if (active) setExpiryAlerts(data) })
+      .catch((error) => { if (active) pushToast('error', error.message || 'Gagal memuat peringatan kedaluwarsa.') })
+    return () => { active = false }
+  }, [isAuthenticated, activeView, featureView, expiryAlertRefresh])
   useEffect(() => {
     if (!isAuthenticated) return
     let active = true
@@ -434,9 +449,9 @@ function App() {
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
   const firstName = (currentUser?.name || 'there').split(' ')[0]
   useEffect(() => {
-    if (!isAuthenticated || !['suppliers', 'purchases'].includes(activeView)) return
+    if (!isAuthenticated || (!['suppliers', 'purchases'].includes(activeView) && featureView !== 'restock')) return
     fetch(`${API_URL}/suppliers`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('Gagal memuat pemasok.'); return response.json() }).then((data) => { setSuppliers(data); setDatabaseOnline(true) }).catch((error) => { setDatabaseOnline(false); pushToast('error', error.message || 'Gagal memuat pemasok.') })
-  }, [isAuthenticated, activeView])
+  }, [isAuthenticated, activeView, featureView])
   useEffect(() => {
     if (!isAuthenticated || activeView !== 'purchases') return
     fetch(`${API_URL}/purchases`, { headers: authHeaders() }).then((response) => { if (!response.ok) throw new Error('Gagal memuat pesanan pembelian.'); return response.json() }).then((data) => { setPurchases(data); setDatabaseOnline(true) }).catch((error) => { setDatabaseOnline(false); pushToast('error', error.message || 'Gagal memuat pesanan pembelian.') })
@@ -663,7 +678,7 @@ function App() {
   const refreshWarehouses = () => setWarehouseRefresh((value) => value + 1)
   const refreshCashSession = () => setCashSessionRefresh((value) => value + 1)
   const refreshNavigationCounts = () => setNavigationCountsRefresh((value) => value + 1)
-  const refreshInventory = () => { refreshProducts(); refreshWarehouses() }
+  const refreshInventory = () => { refreshProducts(); refreshWarehouses(); setExpiryAlertRefresh((value) => value + 1) }
   const saveProductMetadata = async (id, payload) => {
     try {
       const response = await fetch(`${API_URL}/products/${id}/metadata`, { method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -722,7 +737,7 @@ function App() {
   const createPurchase = async (payload) => {
     try {
       const defaultDueDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
-      const response = await fetch(`${API_URL}/purchases`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, warehouseId: Number(selectedWarehouseId) || undefined, dueDate: payload.dueDate || defaultDueDate }) })
+      const response = await fetch(`${API_URL}/purchases`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, warehouseId: Number(payload.warehouseId) || Number(selectedWarehouseId) || undefined, dueDate: payload.dueDate || defaultDueDate }) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.message || 'Pesanan gagal dibuat.')
       setPurchases((current) => [result, ...current])
@@ -740,6 +755,7 @@ function App() {
       if (!response.ok) throw new Error(result.message || 'Penerimaan barang gagal dicatat.')
       setPurchases((current) => current.map((order) => order.id === id ? result : order))
       await refreshProducts()
+      setExpiryAlertRefresh((value) => value + 1)
       setDatabaseOnline(true)
       pushToast('success', `Penerimaan ${result.orderNumber} berhasil dicatat.`)
       return true
@@ -778,6 +794,7 @@ function App() {
       refreshNavigationCounts()
       if (payload.checkoutPaymentMethod === 'cash') refreshCashSession()
       await refreshProducts()
+      setExpiryAlertRefresh((value) => value + 1)
       setDatabaseOnline(true)
       pushToast('success', `Pesanan ${result.orderNumber} dibuat.`)
       return result
@@ -790,6 +807,7 @@ function App() {
       if (!response.ok) throw new Error(result.message || 'Pesanan gagal diperbarui.')
       setSales((current) => current.map((order) => order.id === id ? result : order))
       await refreshProducts()
+      setExpiryAlertRefresh((value) => value + 1)
       setDatabaseOnline(true)
       pushToast('success', action === 'return' ? `Retur ${result.orderNumber} dicatat.` : `Pesanan ${result.orderNumber} dibatalkan.`)
       return true
@@ -851,7 +869,7 @@ function App() {
 <section className="welcome-row"><div><p className="muted">Audit trail</p><h2>Recent stock changes</h2><p className="muted">200 pergerakan stok terbaru di seluruh produk.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL synced' : 'Local mode'}</div></section>
 <section className="catalog-panel"><div className="panel-heading"><div><h2>Stock log</h2><p className="muted">{stockLog.length} movement{stockLog.length === 1 ? '' : 's'}.</p></div></div><div className="table-wrap"><table><thead><tr><th>Product</th><th>Delta</th><th>Before → After</th><th>User</th><th>Reason</th><th>Time</th></tr></thead><tbody>{stockLog.map((movement) => <tr key={movement.id}><td><strong>{movement.productName || '—'}</strong></td><td><span className={movement.delta >= 0 ? 'delta-up' : 'delta-down'}>{movement.delta >= 0 ? '+' : ''}{movement.delta}</span></td><td>{movement.stockBefore} → {movement.stockAfter}</td><td>{movement.userName || '—'}</td><td>{movement.reason || '—'}</td><td>{movement.createdAt ? new Date(movement.createdAt).toLocaleString('id-ID') : '—'}</td></tr>)}{stockLog.length === 0 && <tr><td colSpan="6" className="empty-state">Belum ada pergerakan stok.</td></tr>}</tbody></table></div><div className="table-footer"><span>Showing <b>{stockLog.length}</b> movements</span></div></section></>
  : isAdmin && activeView === 'users' ? <UsersView users={users} onSave={saveUser} onDelete={removeUser} /> : <>
-<header className="topbar"><div><p className="breadcrumb">Workspace / <span>Products</span></p><h1>Product inventory</h1></div><div className="topbar-actions"><div className="notif-wrap"><button className="notif-bell" title="Low stock alerts" onClick={() => setBellOpen((open) => !open)}><Bell size={18} />{lowOrOut.length > 0 && <span className="notif-badge">{lowOrOut.length}</span>}</button>{bellOpen && <div className="notif-panel"><div className="notif-panel-head"><strong>Low / out of stock</strong><span className="muted">{lowOrOut.length} produk</span></div>{lowOrOut.length === 0 ? <p className="notif-empty">Semua stok aman.</p> : <ul className="notif-list">{lowOrOut.map((product) => <li key={product.id}><div><strong>{product.name}</strong><span className={`status ${product.status.toLowerCase().replace(' ', '-')}`}><span></span>{product.stock} units · {product.status}</span></div><button className="notif-edit" onClick={() => { setBellOpen(false); openEditModal(product) }}><Pencil size={13} /> Edit</button></li>)}</ul>}</div>}</div><button className="primary-button" onClick={openCreateModal}><CirclePlus size={18} /> Add product</button></div></header><section className="welcome-row"><div><p className="muted">{todayLabel}</p><h2>{greeting}, {firstName} <span className="spark">✦</span></h2><p className="muted">Here is what's happening with your inventory today.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL synced' : 'Local mode'}</div></section>
+<header className="topbar"><div><p className="breadcrumb">Workspace / <span>Products</span></p><h1>Product inventory</h1></div><div className="topbar-actions"><div className="notif-wrap"><button className="notif-bell" title="Peringatan stok & kedaluwarsa" onClick={() => setBellOpen((open) => !open)}><Bell size={18} />{lowOrOut.length + expiryAlerts.length > 0 && <span className="notif-badge">{lowOrOut.length + expiryAlerts.length}</span>}</button>{bellOpen && <div className="notif-panel"><div className="notif-panel-head"><strong>Peringatan inventaris</strong><span className="muted">{lowOrOut.length + expiryAlerts.length} item</span></div>{lowOrOut.length + expiryAlerts.length === 0 ? <p className="notif-empty">Stok aman dan tidak ada batch yang mendekati kedaluwarsa.</p> : <ul className="notif-list">{lowOrOut.map((product) => <li key={`stock-${product.id}`}><div><strong>{product.name}</strong><span className={`status ${product.status.toLowerCase().replace(' ', '-')}`}><span></span>{product.stock} units · {product.status}</span></div><button className="notif-edit" onClick={() => { setBellOpen(false); openEditModal(product) }}><Pencil size={13} /> Edit</button></li>)}{expiryAlerts.map((batch) => <li key={`expiry-${batch.id}`}><div><strong>{batch.productName} · batch {batch.batchNumber}</strong><span className="status low-stock"><span></span>{batch.daysUntilExpiry < 0 ? `Kedaluwarsa ${Math.abs(batch.daysUntilExpiry)} hari lalu` : batch.daysUntilExpiry === 0 ? 'Kedaluwarsa hari ini' : `Kedaluwarsa ${batch.daysUntilExpiry} hari lagi`} · {batch.quantity} unit · {batch.warehouseName}</span></div><button className="notif-edit" onClick={() => { setBellOpen(false); setFeatureView('batches') }}>Lihat</button></li>)}</ul>}</div>}</div><button className="primary-button" onClick={openCreateModal}><CirclePlus size={18} /> Add product</button></div></header><section className="welcome-row"><div><p className="muted">{todayLabel}</p><h2>{greeting}, {firstName} <span className="spark">✦</span></h2><p className="muted">Here is what's happening with your inventory today.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL synced' : 'Local mode'}</div></section>
           <section className="stats-grid"><div className="stat-card"><div className="stat-label"><span>Total products</span><span className="stat-icon blue"><Box size={17} /></span></div><strong>{products.length}</strong><small><b className="positive">{categoryCount}</b> kategori</small></div><div className="stat-card"><div className="stat-label"><span>Inventory value</span><span className="stat-icon green">Rp</span></div><strong>{formatIDR(totalValue)}</strong><small>Rata-rata {formatIDR(avgPrice)} per produk</small></div><div className="stat-card"><div className="stat-label"><span>Active products</span><span className="stat-icon orange"><Check size={17} /></span></div><strong>{activeProducts}</strong><small><b className="positive">{activeProducts}</b> dari {products.length} produk</small></div><div className="stat-card"><div className="stat-label"><span>Needs attention</span><span className="stat-icon red"><Activity size={17} /></span></div><strong>{lowStock}</strong><small><b className="negative">Perlu restock</b> · {lowStock} produk</small></div></section>
           <section className="catalog-panel"><div className="panel-heading"><div><h2>All products</h2><p className="muted">Manage your catalog and inventory levels.</p></div><div className="panel-heading-actions"><label className="filter-button import-button"><FileUp size={15} /> Import<input type="file" accept=".csv" onChange={handleImportFile} /></label><button className="filter-button" onClick={exportCsv}><ArrowDownUp size={15} /> Export <ChevronDown size={14} /></button><button className="filter-button" onClick={exportAllCsv}><ArrowDownUp size={15} /> Export all</button></div></div><div className="toolbar"><label className="search-box"><Search size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} placeholder="Search products..." /></label><select value={filter} onChange={(event) => { setFilter(event.target.value); setPage(1) }}><option>All status</option><option>Active</option><option>Low stock</option><option>Out of stock</option></select><button className={`filter-button ${filtersOpen ? 'active' : ''}`} onClick={() => setFiltersOpen((open) => !open)}><Settings2 size={15} /> Filters</button></div>{filtersOpen && <div className="toolbar filter-panel"><select value={category} onChange={(event) => { setCategory(event.target.value); setPage(1) }}>{categories.map((item) => <option key={item}>{item}</option>)}</select><input type="number" min="0" value={priceMin} onChange={(event) => { setPriceMin(event.target.value); setPage(1) }} placeholder="Min Rp" /><input type="number" min="0" value={priceMax} onChange={(event) => { setPriceMax(event.target.value); setPage(1) }} placeholder="Max Rp" /><button className="secondary-button" onClick={() => { setCategory('All categories'); setPriceMin(''); setPriceMax(''); setPage(1) }}>Clear filters</button></div>}<div className="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th>SKU</th><th>Price</th><th>Stock</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{pagedProducts.map((product) => <tr key={product.id}><td><div className="product-cell">{product.media ? <span className="media-thumb">{product.media.type.startsWith('video/') ? <video src={product.media.url} muted /> : <img src={product.media.url} alt="" />}<span className="media-type">{product.media.type.startsWith('video/') ? <Video size={10} /> : <ImageIcon size={10} />}</span></span> : <span className={`product-avatar avatar-${product.id % 4}`}><PackageSearch size={18} /></span>}<strong>{product.name}</strong></div></td><td>{product.category}</td><td>{product.sku || '—'}</td><td className="price">{formatIDR(product.price)}</td><td>{product.stock} units</td><td><span className={`status ${product.status.toLowerCase().replace(' ', '-')}`}><span></span>{product.status}</span></td><td><div className="actions"><button title="Edit product" onClick={() => openEditModal(product)}><Pencil size={16} /></button><button title="Delete product" onClick={() => setPendingProduct(product)}><Trash2 size={16} /></button></div></td></tr>)}{filteredProducts.length === 0 && <tr><td colSpan="7" className="empty-state">No products match your search.</td></tr>}</tbody></table></div><div className="table-footer"><span>Showing <b>{filteredProducts.length === 0 ? 0 : (page - 1) * pageSize + 1}-{Math.min(page * pageSize, filteredProducts.length)}</b> of <b>{filteredProducts.length}</b> products</span><div><button onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1}>Previous</button>{Array.from({ length: totalPages }, (unused, index) => index + 1).filter((number) => Math.abs(number - page) <= 2 || number === 1 || number === totalPages).map((number, index, visible) => <span key={number} style={{ display: 'flex', gap: 3 }}>{index > 0 && number - visible[index - 1] > 1 && <button disabled>…</button>}<button className={number === page ? 'page-number' : ''} onClick={() => setPage(number)}>{number}</button></span>)}<button onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page === totalPages}>Next</button></div></div></section></>}
       </main>
@@ -863,7 +881,20 @@ function App() {
         {featureMenuOpen && <div className="feature-menu-items">{[['warehouses', 'Gudang'], ['stocktake', 'Stok opname'], ['cash', `Kas${cashSession ? ' (aktif)' : ''}`], ['payables', 'Utang pemasok'], ...(isAdmin ? [['reports', 'Laporan'], ['expenses', 'Biaya'], ['backup', 'Backup']] : []), ['receivables', 'Piutang'], ['restock', 'Restock'], ['barcode', 'Barcode'], ['batches', 'Batch']].map(([id, label]) => <button key={id} className={featureView === id ? 'active' : ''} onClick={() => { setFeatureView(id); setFeatureMenuOpen(false) }}>{label}</button>)}</div>}
         <div className="feature-launcher-bar"><label className="feature-warehouse"><span>Gudang</span><select aria-label="Pilih gudang untuk transaksi baru" value={selectedWarehouseId} onChange={(event) => setSelectedWarehouseId(event.target.value)}>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}</select></label><button className="feature-menu-toggle" aria-expanded={featureMenuOpen} onClick={() => setFeatureMenuOpen((open) => !open)}><Settings2 size={15} /> Fitur lainnya <ChevronDown size={14} /></button></div>
       </div>
-      {featureView && <div className={`feature-overlay ${featureView === 'reports' ? 'report-print' : ''}`}><div className="feature-overlay-content"><button className="feature-close secondary-button" onClick={() => setFeatureView('')}>Tutup fitur</button>{featureView === 'warehouses' && <WarehousesView warehouses={warehouses} canManage={isAdmin} onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}{featureView === 'stocktake' && <StocktakeView warehouses={warehouses} canManage={isAdmin} onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}{featureView === 'cash' && <CashSessionView onRefresh={refreshCashSession} onToast={(message) => pushToast('success', message)} />}{featureView === 'payables' && <SupplierAccountingView onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}{featureView === 'reports' && isAdmin && <ReportsView />}{featureView === 'expenses' && isAdmin && <ExpensesView />}{featureView === 'backup' && isAdmin && <BackupView onRestored={handleLogout} />}{featureView === 'receivables' && <ReceivablesView />}{featureView === 'restock' && <RestockView />}{featureView === 'barcode' && <BarcodeView products={products} onSave={saveProductMetadata} onToast={(message) => pushToast('success', message)} />}{featureView === 'batches' && <BatchesView products={products} warehouses={warehouses} onToast={(message) => pushToast('success', message)} />}</div></div>}
+      {featureView && <div className={`feature-overlay ${featureView === 'reports' ? 'report-print' : ''}`}><div className="feature-overlay-content">
+        <button className="feature-close secondary-button" onClick={() => setFeatureView('')}>Tutup fitur</button>
+        {featureView === 'warehouses' && <WarehousesView warehouses={warehouses} canManage={isAdmin} onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}
+        {featureView === 'stocktake' && <StocktakeView warehouses={warehouses} canManage={isAdmin} onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}
+        {featureView === 'cash' && <CashSessionView onRefresh={refreshCashSession} onToast={(message) => pushToast('success', message)} />}
+        {featureView === 'payables' && <SupplierAccountingView onRefresh={refreshInventory} onToast={(message) => pushToast('success', message)} />}
+        {featureView === 'reports' && isAdmin && <ReportsView />}
+        {featureView === 'expenses' && isAdmin && <ExpensesView />}
+        {featureView === 'backup' && isAdmin && <BackupView onRestored={handleLogout} />}
+        {featureView === 'receivables' && <ReceivablesView />}
+        {featureView === 'restock' && <RestockView suppliers={suppliers} onCreatePurchase={createPurchase} />}
+        {featureView === 'barcode' && <BarcodeView products={products} onSave={saveProductMetadata} onToast={(message) => pushToast('success', message)} />}
+        {featureView === 'batches' && <BatchesView products={products} warehouses={warehouses} onToast={(message) => pushToast('success', message)} onRefresh={refreshInventory} />}
+      </div></div>}
       <div className="toast-container" role="status" aria-live="polite">{toasts.map((toast) => <div key={toast.id} className={`toast ${toast.type}`}>{toast.type === 'success' ? <Check size={15} /> : <X size={15} />}<span>{toast.message}</span></div>)}</div>
     </div>
   )

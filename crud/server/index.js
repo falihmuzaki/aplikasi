@@ -104,6 +104,31 @@ app.get('/api/product-batches', requireAuth, async (request, response, next) => 
   } catch (error) { next(error) }
 })
 
+app.get('/api/product-batches/expiry-alerts', requireAuth, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT pb.id, pb.product_id, p.name AS product_name, pb.warehouse_id, w.name AS warehouse_name,
+        pb.batch_number, pb.expires_at, pb.quantity, (pb.expires_at - CURRENT_DATE)::int AS days_until_expiry
+      FROM product_batches pb
+      JOIN products p ON p.id=pb.product_id
+      JOIN warehouses w ON w.id=pb.warehouse_id
+      WHERE p.deleted_at IS NULL AND pb.quantity>0 AND pb.expires_at<=CURRENT_DATE + 30
+      ORDER BY pb.expires_at ASC, p.name, w.name
+    `)
+    response.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      productId: Number(row.product_id),
+      productName: row.product_name,
+      warehouseId: Number(row.warehouse_id),
+      warehouseName: row.warehouse_name,
+      batchNumber: row.batch_number,
+      expiresAt: row.expires_at,
+      quantity: row.quantity,
+      daysUntilExpiry: row.days_until_expiry,
+    })))
+  } catch (error) { next(error) }
+})
+
 app.post('/api/product-batches', requireAuth, async (request, response, next) => {
   const productId = Number(request.body.productId)
   const warehouseId = Number(request.body.warehouseId)
@@ -825,14 +850,18 @@ app.get('/api/restock-recommendations', requireAuth, async (_request, response, 
     const result = await pool.query(`
       SELECT p.id, p.name, p.sku, p.barcode, p.low_stock_threshold,
         w.id AS warehouse_id, w.name AS warehouse_name, ws.stock,
-        GREATEST(p.low_stock_threshold * 2 - ws.stock, p.low_stock_threshold) AS suggested_quantity
+        GREATEST(p.low_stock_threshold * 2 - ws.stock, p.low_stock_threshold) AS suggested_quantity,
+        (SELECT poi.unit_cost FROM purchase_order_items poi
+          JOIN purchase_orders po ON po.id=poi.purchase_order_id
+          WHERE poi.product_id=p.id AND poi.received_quantity>0
+          ORDER BY po.created_at DESC, poi.id DESC LIMIT 1) AS last_unit_cost
       FROM warehouse_stocks ws
       JOIN products p ON p.id=ws.product_id
       JOIN warehouses w ON w.id=ws.warehouse_id
       WHERE p.deleted_at IS NULL AND ws.stock <= p.low_stock_threshold
       ORDER BY ws.stock ASC, p.name, w.name
     `)
-    response.json(result.rows.map((row) => ({ productId: Number(row.id), name: row.name, sku: row.sku, barcode: row.barcode, warehouseId: Number(row.warehouse_id), warehouseName: row.warehouse_name, stock: row.stock, lowStockThreshold: row.low_stock_threshold, suggestedQuantity: row.suggested_quantity })))
+    response.json(result.rows.map((row) => ({ productId: Number(row.id), name: row.name, sku: row.sku, barcode: row.barcode, warehouseId: Number(row.warehouse_id), warehouseName: row.warehouse_name, stock: row.stock, lowStockThreshold: row.low_stock_threshold, suggestedQuantity: row.suggested_quantity, lastUnitCost: row.last_unit_cost === null ? null : Number(row.last_unit_cost) })))
   } catch (error) { next(error) }
 })
 
