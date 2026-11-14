@@ -5,6 +5,22 @@ import './Storefront.css'
 
 const formatIDR = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0)
 const initialCheckout = { customerName: '', customerEmail: '', customerPhone: '', fulfillmentMethod: 'pickup', deliveryAddress: '', notes: '' }
+const fulfillmentLabels = { pending: 'Menunggu diproses', processing: 'Sedang diproses', ready_for_pickup: 'Siap diambil', shipped: 'Dalam pengiriman', completed: 'Selesai', cancelled: 'Dibatalkan' }
+const paymentStatusLabels = { unpaid: 'Belum dibayar', partial: 'Dibayar sebagian', paid: 'Lunas', refund_due: 'Menunggu refund', partially_refunded: 'Refund sebagian', refunded: 'Dana dikembalikan' }
+const trackingSteps = {
+  pickup: ['pending', 'processing', 'ready_for_pickup', 'completed'],
+  delivery: ['pending', 'processing', 'shipped', 'completed'],
+}
+
+async function requestTrackingOrder(token, signal) {
+  const response = await fetch(`${API_URL}/storefront/orders/track`, {
+    signal,
+    headers: { Accept: 'application/json', 'X-Order-Tracking-Token': token },
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.message || 'Pesanan tidak ditemukan.')
+  return result
+}
 
 export default function Storefront() {
   const [products, setProducts] = useState([])
@@ -18,6 +34,11 @@ export default function Storefront() {
   const [saving, setSaving] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
   const [confirmation, setConfirmation] = useState(null)
+  const [initialTrackingToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('track') || '')
+  const [trackingToken, setTrackingToken] = useState(initialTrackingToken)
+  const [trackingOrder, setTrackingOrder] = useState(null)
+  const [trackingLoading, setTrackingLoading] = useState(Boolean(initialTrackingToken))
+  const [trackingError, setTrackingError] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -35,6 +56,38 @@ export default function Storefront() {
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [])
+
+  useEffect(() => {
+    let controller
+    const fetchOrder = (token, signal) => requestTrackingOrder(token, signal)
+      .then(setTrackingOrder)
+      .catch((error) => {
+        if (error.name !== 'AbortError') setTrackingError(error.message || 'Pesanan tidak ditemukan.')
+      })
+      .finally(() => { if (!signal.aborted) setTrackingLoading(false) })
+    if (initialTrackingToken) {
+      controller = new AbortController()
+      fetchOrder(initialTrackingToken, controller.signal)
+      document.getElementById('lacak-pesanan')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    const handleHashChange = () => {
+      const token = new URLSearchParams(window.location.hash.slice(1)).get('track') || ''
+      if (!token) return
+      setTrackingToken(token)
+      setTrackingOrder(null)
+      setTrackingError('')
+      setTrackingLoading(true)
+      controller?.abort()
+      controller = new AbortController()
+      fetchOrder(token, controller.signal)
+      document.getElementById('lacak-pesanan')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    window.addEventListener('hashchange', handleHashChange)
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange)
+      controller?.abort()
+    }
+  }, [initialTrackingToken])
 
   const categories = useMemo(() => ['Semua', ...new Set(products.map((product) => product.category).filter(Boolean))], [products])
   const visibleProducts = useMemo(() => products.filter((product) => (
@@ -88,6 +141,34 @@ export default function Storefront() {
       setSaving(false)
     }
   }
+  const submitTracking = async (event) => {
+    event.preventDefault()
+    const token = trackingToken.trim()
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      setTrackingError('Kode pelacakan tidak valid.')
+      setTrackingOrder(null)
+      return
+    }
+    window.history.replaceState(null, '', `${window.location.pathname}?shop=1#track=${encodeURIComponent(token)}`)
+    setTrackingLoading(true)
+    setTrackingError('')
+    setTrackingOrder(null)
+    try {
+      setTrackingOrder(await requestTrackingOrder(token))
+    } catch (error) {
+      setTrackingError(error.message || 'Pesanan tidak ditemukan.')
+    } finally {
+      setTrackingLoading(false)
+    }
+  }
+  const trackingStatus = trackingOrder?.status === 'cancelled' ? 'cancelled' : trackingOrder?.fulfillmentStatus
+  const orderTrackingSteps = trackingOrder ? trackingSteps[trackingOrder.fulfillmentMethod] || [] : []
+  const currentStepIndex = orderTrackingSteps.indexOf(trackingStatus)
+  const trackingStatusLabel = trackingOrder?.status === 'returned'
+    ? 'Diretur'
+    : trackingOrder?.status === 'partially_returned'
+      ? `${fulfillmentLabels[trackingStatus] || 'Status belum tersedia'} · retur sebagian`
+      : fulfillmentLabels[trackingStatus] || 'Status belum tersedia'
 
   return (
     <div className="storefront">
@@ -98,6 +179,7 @@ export default function Storefront() {
         </a>
         <div className="storefront-header-actions">
           <a className="storefront-admin-link" href="/">Login admin</a>
+          <a className="storefront-track-link" href="#lacak-pesanan">Lacak pesanan</a>
           <a className="storefront-cart-link" href="#keranjang"><ShoppingBag size={18} /><span>Keranjang</span><strong>{cart.reduce((sum, item) => sum + item.quantity, 0)}</strong></a>
         </div>
       </header>
@@ -105,13 +187,41 @@ export default function Storefront() {
       <main className="storefront-main">
         {confirmation && <section className="storefront-confirmation" role="status">
           <CheckCircle2 size={24} />
-          <div><strong>Pesanan berhasil dibuat: {confirmation.orderNumber}</strong><p>Total {formatIDR(confirmation.totalAmount)} · Belum dibayar. Simpan nomor pesanan ini untuk koordinasi pembayaran dan pengambilan/pengiriman dengan toko.</p></div>
+          <div>
+            <strong>Pesanan berhasil dibuat: {confirmation.orderNumber}</strong>
+            <p>Total {formatIDR(confirmation.totalAmount)} · Belum dibayar.</p>
+            {confirmation.trackingToken
+              ? <><p>Simpan tautan pelacakan ini untuk melihat perkembangan pesanan.</p><a className="storefront-confirmation-link" href={`/?shop=1#track=${encodeURIComponent(confirmation.trackingToken)}`}>Lacak status pesanan</a></>
+              : <p>Hubungi admin toko dengan nomor pesanan ini untuk mengetahui perkembangannya.</p>}
+          </div>
           <button type="button" aria-label="Tutup pemberitahuan" onClick={() => setConfirmation(null)}><X size={18} /></button>
         </section>}
 
         <section className="storefront-hero">
           <div><span className="storefront-eyebrow"><Store size={15} /> TOKO ONLINE</span><h1>Temukan produk favorit Anda.</h1><p>Pilih produk, masukkan ke keranjang, lalu pesan dengan mudah tanpa perlu membuat akun.</p></div>
           <a href="#produk" className="storefront-hero-link">Lihat katalog <ArrowLeft size={16} /></a>
+        </section>
+
+        <section className="storefront-tracking" id="lacak-pesanan">
+          <div className="storefront-tracking-heading"><div><p>STATUS PESANAN</p><h2>Lacak pesanan Anda</h2><span>Buka tautan pelacakan dari konfirmasi pesanan, atau masukkan kodenya di sini.</span></div></div>
+          <form className="storefront-tracking-form" onSubmit={submitTracking}>
+            <label htmlFor="storefront-tracking-token">Kode pelacakan<input id="storefront-tracking-token" required maxLength="43" value={trackingToken} onChange={(event) => setTrackingToken(event.target.value)} placeholder="Tempel kode pelacakan" autoComplete="off" disabled={trackingLoading} /></label>
+            <button type="submit" className="storefront-checkout-button" disabled={trackingLoading}>{trackingLoading ? 'Memeriksa…' : 'Lacak pesanan'}</button>
+          </form>
+          {trackingError && <p className="storefront-form-error" role="alert">{trackingError}</p>}
+          {trackingLoading && <p className="storefront-tracking-note" role="status">Memuat status pesanan…</p>}
+          {trackingOrder && <article className="storefront-tracking-result" aria-live="polite">
+            <div className="storefront-tracking-result-heading"><div><small>No. pesanan</small><strong>{trackingOrder.orderNumber}</strong></div><div><small>Status terkini</small><strong>{trackingStatusLabel}</strong></div></div>
+            {trackingOrder.status === 'cancelled'
+              ? <p className="storefront-tracking-cancelled">Pesanan ini telah dibatalkan.</p>
+              : <ol className="storefront-tracking-steps">{orderTrackingSteps.map((step, index) => <li key={step} className={index <= currentStepIndex ? 'complete' : ''} aria-current={step === trackingStatus ? 'step' : undefined}><span>{index + 1}</span><strong>{fulfillmentLabels[step]}</strong></li>)}</ol>}
+            <div className="storefront-tracking-order-details">
+              <span>{trackingOrder.fulfillmentMethod === 'delivery' ? 'Pengiriman' : 'Ambil di toko'}</span>
+              <div><strong>Total {formatIDR(trackingOrder.totalAmount)} · Belum termasuk ongkir</strong><small>Pembayaran: {paymentStatusLabels[trackingOrder.paymentStatus] || 'Belum tersedia'}{trackingOrder.balanceDue > 0 ? ` · Sisa ${formatIDR(trackingOrder.balanceDue)}` : ''}</small></div>
+            </div>
+            <ul>{trackingOrder.items.map((item, index) => <li key={`${item.productName}-${index}`}>{item.productName} · {item.quantity} unit{item.returnedQuantity ? ` · retur ${item.returnedQuantity}` : ''}</li>)}</ul>
+            <small className="storefront-tracking-note">Pembaruan terakhir: {new Date(trackingOrder.updatedAt).toLocaleString('id-ID')}</small>
+          </article>}
         </section>
 
         <div className="storefront-layout">

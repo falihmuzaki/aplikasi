@@ -174,6 +174,12 @@ ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS tax_rate NUMERIC(5, 2) NOT NUL
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'internal' CHECK (source IN ('internal', 'online'));
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS fulfillment_method VARCHAR(16) NOT NULL DEFAULT 'pickup' CHECK (fulfillment_method IN ('pickup', 'delivery'));
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS fulfillment_status VARCHAR(24)
+  CHECK (fulfillment_status IN ('pending', 'processing', 'ready_for_pickup', 'shipped', 'completed'));
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS tracking_token_hash VARCHAR(64);
+UPDATE sales_orders SET fulfillment_status='pending' WHERE source='online' AND fulfillment_status IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS sales_orders_tracking_token_hash_idx
+  ON sales_orders(tracking_token_hash) WHERE tracking_token_hash IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sales_order_items (
   id BIGSERIAL PRIMARY KEY,

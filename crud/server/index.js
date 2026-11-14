@@ -10,6 +10,12 @@ import { Redis } from '@upstash/redis'
 import pg from 'pg'
 import { sendOtpEmail } from './mailer.js'
 import { validateStorefrontOrder } from './storefront-validation.js'
+import {
+  canAdvanceStorefrontFulfillmentStatus,
+  createStorefrontTrackingToken,
+  hashStorefrontTrackingToken,
+  isStorefrontTrackingToken,
+} from './storefront-tracking.js'
 
 const { Pool } = pg
 const app = express()
@@ -66,7 +72,7 @@ const backupTables = [
   'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses',
 ]
 
-function createRateLimiter({ windowMs, max, message, prefix }) {
+function createRateLimiter({ windowMs, max, message, prefix, unavailableMessage = 'Layanan autentikasi sedang tidak tersedia. Coba lagi nanti.' }) {
   const hits = new Map()
   const distributedLimiter = redis ? new Ratelimit({
     redis,
@@ -97,8 +103,8 @@ function createRateLimiter({ windowMs, max, message, prefix }) {
       try {
         const result = await distributedLimiter.limit(identifier)
         if (result.reason === 'timeout') {
-          console.error('Upstash Redis rate-limit request timed out; rejecting authentication request.')
-          return response.status(503).json({ message: 'Layanan autentikasi sedang tidak tersedia. Coba lagi nanti.' })
+          console.error(`Upstash Redis rate-limit request timed out for ${prefix}; rejecting request.`)
+          return response.status(503).json({ message: unavailableMessage })
         }
         if (!result.success) {
           response.setHeader('Retry-After', String(Math.max(1, Math.ceil((result.reset - Date.now()) / 1000))))
@@ -107,8 +113,8 @@ function createRateLimiter({ windowMs, max, message, prefix }) {
         request.clearRateLimit = () => distributedLimiter.resetUsedTokens(identifier)
         return next()
       } catch (error) {
-        console.error('Upstash Redis rate-limit request failed; rejecting authentication request.', error)
-        return response.status(503).json({ message: 'Layanan autentikasi sedang tidak tersedia. Coba lagi nanti.' })
+        console.error(`Upstash Redis rate-limit request failed for ${prefix}; rejecting request.`, error)
+        return response.status(503).json({ message: unavailableMessage })
       }
     }
 
@@ -163,6 +169,13 @@ const storefrontOrderLimiter = createRateLimiter({
   max: 10,
   message: 'Terlalu banyak pesanan dari perangkat ini. Coba lagi nanti.',
   prefix: 'ifal-store:rate-limit:storefront-order',
+})
+const storefrontTrackingLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: 'Terlalu banyak permintaan pelacakan. Coba lagi nanti.',
+  prefix: 'ifal-store:rate-limit:storefront-tracking',
+  unavailableMessage: 'Pelacakan pesanan sedang tidak tersedia. Coba lagi nanti.',
 })
 
 app.get('/api/product-batches', requireAuth, async (request, response, next) => {
@@ -339,6 +352,7 @@ function normalizeSalesOrder(row) {
     source: row.source || 'internal',
     fulfillmentMethod: row.fulfillment_method || 'pickup',
     deliveryAddress: row.delivery_address ?? null,
+    fulfillmentStatus: row.fulfillment_status ?? null,
     status: row.status,
     notes: row.notes,
     createdByName: row.created_by_name,
@@ -2000,10 +2014,71 @@ async function readSalesOrders(where = '', values = []) {
   return result.rows.map(normalizeSalesOrder)
 }
 
+app.get('/api/storefront/orders/track', storefrontTrackingLimiter, async (request, response, next) => {
+  response.set('Cache-Control', 'no-store')
+  const trackingToken = request.get('X-Order-Tracking-Token') || ''
+  if (!isStorefrontTrackingToken(trackingToken)) return response.status(404).json({ message: 'Pesanan tidak ditemukan.' })
+  try {
+    const result = await pool.query(`
+      SELECT so.order_number, so.status, so.fulfillment_status, so.fulfillment_method,
+        so.discount_rate, so.tax_rate, so.created_at, so.updated_at,
+        COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='payment'), 0) AS paid_amount,
+        COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='refund'), 0) AS refunded_amount,
+        COALESCE(json_agg(json_build_object(
+          'productName', soi.product_name,
+          'quantity', soi.quantity,
+          'returnedQuantity', soi.returned_quantity,
+          'unitPrice', soi.unit_price
+        ) ORDER BY soi.id) FILTER (WHERE soi.id IS NOT NULL), '[]'::json) AS items
+      FROM sales_orders so
+      LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
+      WHERE so.source='online' AND so.tracking_token_hash=$1
+      GROUP BY so.id
+    `, [hashStorefrontTrackingToken(trackingToken)])
+    if (!result.rowCount) return response.status(404).json({ message: 'Pesanan tidak ditemukan.' })
+    const order = result.rows[0]
+    const subtotalCents = order.items.reduce((sum, item) => (
+      sum + BigInt(Math.round(Number(item.unitPrice) * 100)) * BigInt(Number(item.quantity) - Number(item.returnedQuantity))
+    ), 0n)
+    const totalAmount = order.status === 'cancelled'
+      ? 0
+      : calculateSaleTotals(subtotalCents, Number(order.discount_rate || 0), Number(order.tax_rate || 0)).totalAmount
+    const paidAmount = Math.round(Number(order.paid_amount || 0) * 100) / 100
+    const refundedAmount = Math.round(Number(order.refunded_amount || 0) * 100) / 100
+    const netPaid = Math.round((paidAmount - refundedAmount) * 100) / 100
+    const refundDue = Math.round(Math.max(0, netPaid - totalAmount) * 100) / 100
+    let paymentStatus = 'unpaid'
+    if (order.status !== 'cancelled' && totalAmount === 0) paymentStatus = 'paid'
+    else if (refundedAmount > 0 && netPaid <= 0) paymentStatus = 'refunded'
+    else if (refundDue > 0 && refundedAmount > 0) paymentStatus = 'partially_refunded'
+    else if (refundDue > 0) paymentStatus = 'refund_due'
+    else if (totalAmount > 0 && netPaid >= totalAmount) paymentStatus = 'paid'
+    else if (refundedAmount > 0) paymentStatus = 'partially_refunded'
+    else if (netPaid > 0) paymentStatus = 'partial'
+    response.json({
+      orderNumber: order.order_number,
+      status: order.status,
+      fulfillmentStatus: order.status === 'cancelled' ? 'cancelled' : order.fulfillment_status,
+      fulfillmentMethod: order.fulfillment_method,
+      createdAt: order.created_at,
+      updatedAt: order.updated_at,
+      totalAmount,
+      balanceDue: Math.round(Math.max(0, totalAmount - netPaid) * 100) / 100,
+      paymentStatus,
+      items: order.items.map((item) => ({
+        productName: item.productName,
+        quantity: Number(item.quantity),
+        returnedQuantity: Number(item.returnedQuantity),
+      })),
+    })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, response, next) => {
   const validation = validateStorefrontOrder(request.body)
   if (validation.error) return response.status(400).json({ message: validation.error })
   const orderInput = validation.data
+  const trackingToken = createStorefrontTrackingToken()
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -2015,10 +2090,10 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
     const warehouseId = warehouseResult.rows[0].id
     const orderResult = await client.query(
       `INSERT INTO sales_orders
-        (customer_name, customer_email, customer_phone, warehouse_id, notes, source, fulfillment_method, delivery_address)
-       VALUES ($1,$2,$3,$4,$5,'online',$6,$7)
+        (customer_name, customer_email, customer_phone, warehouse_id, notes, source, fulfillment_method, delivery_address, fulfillment_status, tracking_token_hash)
+       VALUES ($1,$2,$3,$4,$5,'online',$6,$7,'pending',$8)
        RETURNING id, created_at`,
-      [orderInput.customerName, orderInput.customerEmail, orderInput.customerPhone, warehouseId, orderInput.notes, orderInput.fulfillmentMethod, orderInput.deliveryAddress],
+      [orderInput.customerName, orderInput.customerEmail, orderInput.customerPhone, warehouseId, orderInput.notes, orderInput.fulfillmentMethod, orderInput.deliveryAddress, hashStorefrontTrackingToken(trackingToken)],
     )
     const order = orderResult.rows[0]
     const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
@@ -2095,6 +2170,7 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
       invoiceNumber,
       totalAmount: Number(subtotalCents) / 100,
       fulfillmentMethod: orderInput.fulfillmentMethod,
+      trackingToken,
     })
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
@@ -2104,6 +2180,46 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
 
 app.get('/api/sales', requireAuth, async (_request, response, next) => {
   try { response.json(await readSalesOrders()) } catch (error) { next(error) }
+})
+
+app.patch('/api/sales/:id/fulfillment', requireAuth, async (request, response, next) => {
+  const orderId = Number(request.params.id)
+  const nextStatus = String(request.body?.fulfillmentStatus || '')
+  if (!Number.isSafeInteger(orderId) || orderId < 1) return response.status(400).json({ message: 'Nomor pesanan tidak valid.' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const orderResult = await client.query(
+      'SELECT source, status, fulfillment_method, fulfillment_status FROM sales_orders WHERE id=$1 FOR UPDATE',
+      [orderId],
+    )
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Pesanan tidak ditemukan.' })
+    }
+    const order = orderResult.rows[0]
+    if (order.source !== 'online' || ['cancelled', 'returned'].includes(order.status)) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Status pemenuhan pesanan ini tidak dapat diubah.' })
+    }
+    if (!canAdvanceStorefrontFulfillmentStatus(order.fulfillment_status, order.fulfillment_method, nextStatus)) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Perubahan status pemenuhan tidak sesuai urutan.' })
+    }
+    const updateResult = await client.query(
+      'UPDATE sales_orders SET fulfillment_status=$1, updated_at=NOW() WHERE id=$2 RETURNING fulfillment_status, updated_at',
+      [nextStatus, orderId],
+    )
+    await client.query('COMMIT')
+    response.json({
+      id: orderId,
+      fulfillmentStatus: updateResult.rows[0].fulfillment_status,
+      updatedAt: updateResult.rows[0].updated_at,
+    })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
 })
 
 app.get('/api/receivables', requireAuth, async (_request, response, next) => {
