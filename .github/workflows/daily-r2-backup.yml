@@ -1,0 +1,21 @@
+name: Daily Ifal Store backup
+
+on:
+  schedule:
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the API backup endpoint
+        env:
+          API_BASE_URL: ${{ secrets.IFAL_STORE_API_URL }}
+          CRON_SECRET: ${{ secrets.IFAL_STORE_CRON_SECRET }}
+        run: |
+          test -n "$API_BASE_URL" || { echo "IFAL_STORE_API_URL is not configured"; exit 1; }
+          test -n "$CRON_SECRET" || { echo "IFAL_STORE_CRON_SECRET is not configured"; exit 1; }
+          curl --fail-with-body --silent --show-error --retry 3 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${API_BASE_URL%/}/cron/backup"

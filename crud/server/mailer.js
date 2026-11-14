@@ -39,6 +39,7 @@ function isSmtpConfigured(config) {
 // Transporter dibuat sekali (lazy singleton) saat pertama kali dibutuhkan, bukan
 // saat import, supaya server tetap boot bersih ketika MAIL_* belum diisi.
 let transporter = null
+let transactionMailConfigurationWarningLogged = false
 
 function getTransporter(config) {
   if (!transporter) {
@@ -47,9 +48,35 @@ function getTransporter(config) {
       port: config.port,
       secure: config.secure,
       auth: { user: config.username, pass: config.password },
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
     })
   }
   return transporter
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character])
+}
+
+export function createCustomerStorefrontMessage({ subject, title, lines, trackingUrl }) {
+  const safeLines = lines.map((line) => String(line))
+  const link = /^https?:\/\//i.test(String(trackingUrl || '')) ? String(trackingUrl) : ''
+  const text = [title, '', ...safeLines, ...(link ? ['', `Lacak pesanan: ${link}`] : []), '', '— Ifal Store'].join('\n')
+  const html = [
+    `<h2>${escapeHtml(title)}</h2>`,
+    ...safeLines.map((line) => `<p>${escapeHtml(line)}</p>`),
+    link ? `<p><a href="${escapeHtml(link)}">Lacak status pesanan</a></p>` : '',
+    '<p>— Ifal Store</p>',
+  ].join('')
+  return { subject, text, html }
 }
 
 function buildMessage({ code, purpose }) {
@@ -109,5 +136,26 @@ export async function sendOtpEmail({ to, code, purpose }) {
     // Jangan pernah log kode OTP atau password SMTP di sini.
     console.error(`[MAIL] Gagal mengirim OTP ke ${to}: ${error.message}`)
     // Error ditelan agar kontrak respons HTTP tidak berubah (enumeration-safe).
+  }
+}
+
+export async function sendCustomerStorefrontEmail({ to, subject, title, lines, trackingUrl }) {
+  if (!to) return
+  const config = readMailConfig()
+  if (!isSmtpConfigured(config)) {
+    if (!transactionMailConfigurationWarningLogged) {
+      console.warn('[MAIL] Email transaksi tidak dikirim karena SMTP belum dikonfigurasi.')
+      transactionMailConfigurationWarningLogged = true
+    }
+    return
+  }
+
+  const message = createCustomerStorefrontMessage({ subject, title, lines, trackingUrl })
+  const from = config.fromName ? `"${config.fromName}" <${config.fromAddress}>` : config.fromAddress
+
+  try {
+    await getTransporter(config).sendMail({ from, to, ...message })
+  } catch (error) {
+    console.error(`[MAIL] Gagal mengirim email transaksi ke ${to}: ${error.message}`)
   }
 }

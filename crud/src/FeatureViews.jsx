@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
-import { CirclePlus, Printer, RefreshCw, Save, Truck, Upload, X } from 'lucide-react'
+import { CirclePlus, Printer, RefreshCw, Save, TicketPercent, Truck, Upload, X } from 'lucide-react'
 import { API_URL } from './api-url'
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0)
 const backupTables = [
   'users', 'cash_sessions', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
-  'purchase_orders', 'purchase_order_items', 'purchase_payments', 'supplier_returns',
-  'supplier_return_items', 'sales_orders', 'sales_order_items', 'product_batches',
+  'purchase_orders',   'purchase_order_items', 'purchase_payments', 'supplier_returns',
+  'supplier_return_items', 'storefront_customer_accounts', 'storefront_coupons', 'sales_orders',
+  'payment_gateway_transactions', 'sales_order_items', 'product_batches',
   'sales_payments', 'sales_order_item_batches', 'warehouse_stocks', 'stock_movements',
-  'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses',
+  'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses', 'audit_logs',
+  'storefront_coupon_redemptions', 'storefront_loyalty_ledger',
 ]
 const backupTableLabels = {
   users: 'Pengguna',
@@ -23,7 +25,10 @@ const backupTableLabels = {
   purchase_payments: 'Pembayaran pemasok',
   supplier_returns: 'Retur pemasok',
   supplier_return_items: 'Item retur pemasok',
+  storefront_customer_accounts: 'Akun pelanggan toko online',
+  storefront_coupons: 'Kupon promosi',
   sales_orders: 'Pesanan penjualan',
+  payment_gateway_transactions: 'Transaksi payment gateway',
   sales_order_items: 'Item penjualan',
   product_batches: 'Batch produk',
   sales_payments: 'Pembayaran penjualan',
@@ -34,6 +39,9 @@ const backupTableLabels = {
   stocktakes: 'Stok opname',
   stocktake_items: 'Item stok opname',
   operating_expenses: 'Biaya operasional',
+  audit_logs: 'Audit aktivitas',
+  storefront_coupon_redemptions: 'Riwayat pemakaian kupon',
+  storefront_loyalty_ledger: 'Riwayat poin loyalti',
 }
 
 async function api(path, options = {}) {
@@ -241,6 +249,16 @@ export function BackupView({ onRestored }) {
   const [busy, setBusy] = useState(false)
   const [pendingRestore, setPendingRestore] = useState(null)
   const [restoreAcknowledged, setRestoreAcknowledged] = useState(false)
+  const [scheduled, setScheduled] = useState(null)
+  const [scheduleError, setScheduleError] = useState('')
+  const [scheduleRefresh, setScheduleRefresh] = useState(0)
+  useEffect(() => {
+    let active = true
+    api('/backup/scheduled').then((result) => {
+      if (active) { setScheduled(result); setScheduleError('') }
+    }).catch((cause) => { if (active) setScheduleError(cause.message) })
+    return () => { active = false }
+  }, [scheduleRefresh])
   const exportBackup = async () => {
     setBusy(true); setError(''); setStatus('')
     try {
@@ -262,10 +280,14 @@ export function BackupView({ onRestored }) {
     setBusy(true); setError(''); setStatus('')
     try {
       const backup = JSON.parse(await file.text())
-      if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) throw new Error('File bukan backup Ifal Store yang didukung.')
+      if (backup?.format !== 'ifal-store-backup' || ![1, 2, 3].includes(backup.version) || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) throw new Error('File bukan backup Ifal Store yang didukung.')
       const tables = backup.tables
       if (Object.keys(tables).some((table) => !backupTables.includes(table))) throw new Error('Backup berisi tabel yang tidak dikenal.')
-      const missingTables = backupTables.filter((table) => table !== 'cash_sessions' && !Array.isArray(tables[table]))
+      const optionalTables = [
+        ...(backup.version === 1 ? ['cash_sessions', 'audit_logs', 'payment_gateway_transactions'] : []),
+        ...(backup.version < 3 ? ['storefront_customer_accounts', 'storefront_coupons', 'storefront_coupon_redemptions', 'storefront_loyalty_ledger'] : []),
+      ]
+      const missingTables = backupTables.filter((table) => !optionalTables.includes(table) && !Array.isArray(tables[table]))
       if (missingTables.length || backupTables.some((table) => tables[table] !== undefined && !Array.isArray(tables[table]))) throw new Error('Struktur tabel pada backup tidak lengkap atau tidak valid.')
       if (backupTables.some((table) => (tables[table] || []).some((row) => !row || typeof row !== 'object' || Array.isArray(row)))) throw new Error('Backup berisi baris data yang tidak valid.')
       const totalRows = backupTables.reduce((total, table) => total + (tables[table]?.length || 0), 0)
@@ -299,6 +321,10 @@ export function BackupView({ onRestored }) {
   return <>
     <header className="topbar"><div><p className="breadcrumb">Administration / <span>Backup</span></p><h1>Backup & pemulihan data</h1></div></header>
     <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Cadangkan data</h2><p className="muted">Unduh snapshot seluruh data aplikasi dalam format JSON untuk disimpan secara aman.</p></div></div><div className="toolbar"><button className="primary-button" onClick={exportBackup} disabled={busy}><Save size={16} /> {busy ? 'Memproses...' : 'Unduh backup'}</button></div></section>
+    <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Backup harian ke Cloudflare R2</h2><p className="muted">{scheduled?.configured ? 'Backup otomatis dijalankan setiap hari pukul 00.00 WIB.' : 'Tambahkan kredensial R2 dan CRON_SECRET ke environment proyek API untuk mengaktifkan backup otomatis.'}</p></div><button className="filter-button" onClick={() => setScheduleRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></div>
+      {scheduleError && <p className="login-error">{scheduleError}</p>}
+      {scheduled && <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Status</th><th>Objek R2</th><th>Ukuran</th><th>Waktu selesai</th></tr></thead><tbody>{scheduled.runs.map((run) => <tr key={run.date}><td>{new Date(run.date).toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta' })}</td><td>{run.status === 'completed' ? 'Berhasil' : run.status === 'failed' ? `Gagal (${run.errorCode || 'unknown'})` : 'Berjalan'}</td><td>{run.objectKey}</td><td>{run.sizeBytes === null ? '—' : `${(run.sizeBytes / 1024 / 1024).toFixed(2)} MB`}</td><td>{run.completedAt ? new Date(run.completedAt).toLocaleString('id-ID') : '—'}</td></tr>)}{!scheduled.runs.length && <tr><td colSpan="5" className="empty-state">Belum ada backup terjadwal.</td></tr>}</tbody></table></div>}
+    </section>
     <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Pulihkan dari backup</h2><p className="muted">Pilih file JSON backup Ifal Store. Pemulihan mengganti seluruh data saat ini dan Anda akan diminta masuk kembali.</p></div></div><div className="toolbar"><label className="secondary-button backup-upload"><Upload size={16} /> Pilih file backup<input type="file" accept="application/json,.json" onChange={restoreBackup} disabled={busy} /></label></div></section>
     {error && !pendingRestore && <p className="login-error">{error}</p>}{status && <p className="muted backup-status">{status}</p>}
     <section className="catalog-panel backup-warning"><strong>Perhatian keamanan & pemulihan</strong><p>File backup berisi data usaha dan hash kata sandi akun (OTP sementara tidak disimpan). Batasi akses file dan jangan kirim melalui kanal publik. Proses pemulihan tidak dapat dibatalkan; buat backup terbaru sebelum menjalankannya.</p></section>
@@ -312,6 +338,26 @@ export function BackupView({ onRestored }) {
       <label className="backup-acknowledge"><input type="checkbox" checked={restoreAcknowledged} onChange={(event) => setRestoreAcknowledged(event.target.checked)} /><span>Saya memahami bahwa pemulihan mengganti seluruh data saat ini.</span></label>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={cancelRestore} disabled={busy}>Batal</button><button type="button" className="primary-button" onClick={confirmRestore} disabled={busy || !restoreAcknowledged}>{busy ? 'Memulihkan...' : 'Ganti semua data'}</button></div>
     </section></div>}
+  </>
+}
+
+export function AuditLogView() {
+  const [events, setEvents] = useState([])
+  const [error, setError] = useState('')
+  const [refresh, setRefresh] = useState(0)
+  useEffect(() => {
+    let active = true
+    api('/audit-log?limit=200').then((result) => {
+      if (active) { setEvents(result); setError('') }
+    }).catch((cause) => { if (active) setError(cause.message) })
+    return () => { active = false }
+  }, [refresh])
+  return <>
+    <header className="topbar"><div><p className="breadcrumb">Administration / <span>Audit log</span></p><h1>Riwayat aktivitas</h1></div><button className="filter-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></header>
+    <section className="catalog-panel"><div className="panel-heading"><div><h2>Aktivitas terbaru</h2><p className="muted">Mencatat perubahan berhasil tanpa menyimpan isi data, kata sandi, OTP, atau token.</p></div></div>
+      {error && <p className="login-error">{error}</p>}
+      <div className="table-wrap"><table><thead><tr><th>Waktu</th><th>Pelaku</th><th>Aksi</th><th>Objek</th><th>Request</th><th>HTTP</th></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td>{new Date(event.createdAt).toLocaleString('id-ID')}</td><td>{event.actorName || (event.actorType === 'customer' ? 'Pelanggan' : event.actorType === 'system' ? 'Sistem' : 'Anonim')}</td><td>{event.action}</td><td>{event.resourceType}{event.resourceId ? ` #${event.resourceId}` : ''}</td><td><code>{event.method} {event.path}</code></td><td>{event.responseStatus}</td></tr>)}{!events.length && !error && <tr><td colSpan="6" className="empty-state">Belum ada aktivitas tercatat.</td></tr>}</tbody></table></div>
+    </section>
   </>
 }
 
@@ -430,5 +476,98 @@ export function SupplierAccountingView({ onToast, onRefresh }) {
     <section className="catalog-panel"><div className="panel-heading"><div><h2>Tagihan pembelian</h2><p className="muted">Catat pembayaran sebagian/lunas dan lihat saldo terutang.</p></div></div>{(error || message) && <p className="login-error">{message || error}</p>}<div className="table-wrap"><table><thead><tr><th>Pesanan</th><th>Pemasok</th><th>Jatuh tempo</th><th>Total</th><th>Dibayar</th><th>Saldo utang</th><th></th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td>{order.orderNumber}</td><td>{order.supplierName}</td><td>{order.dueDate || '—'}</td><td>{idr(order.totalAmount)}</td><td>{idr(order.paidAmount)}</td><td>{idr(order.balanceDue)}</td><td>{order.balanceDue > 0 && <button className="secondary-button" onClick={() => { setPayment(order); setPaymentForm({ amount: order.balanceDue.toFixed(2), method: 'bank_transfer', reference: '', notes: '' }) }}>Catat pembayaran</button>}</td></tr>)}{!orders.length && <tr><td colSpan="7" className="empty-state">Belum ada pesanan pembelian.</td></tr>}</tbody></table></div></section>
     <section className="catalog-panel"><div className="panel-heading"><div><h2>Retur ke pemasok</h2><p className="muted">Pilih produk dari pesanan yang sudah diterima; retur mengurangi stok dan saldo utang.</p></div></div><form className="toolbar" onSubmit={saveReturn}><select required value={returnForm.purchaseOrderId} onChange={(event) => setReturnForm({ ...returnForm, purchaseOrderId: event.target.value, productId: '' })}><option value="">Pesanan pembelian</option>{orders.map((order) => <option key={order.id} value={order.id}>{order.orderNumber} · {order.supplierName}</option>)}</select><select required value={returnForm.productId} onChange={(event) => setReturnForm({ ...returnForm, productId: event.target.value })}><option value="">Produk diterima</option>{(selectedOrder?.items || []).filter((item) => item.receivedQuantity > 0).map((item) => <option key={item.productId} value={item.productId}>{item.productName} · diterima {item.receivedQuantity}</option>)}</select><input required type="number" min="1" step="1" value={returnForm.quantity} onChange={(event) => setReturnForm({ ...returnForm, quantity: event.target.value })} /><input maxLength="500" placeholder="Alasan retur" value={returnForm.reason} onChange={(event) => setReturnForm({ ...returnForm, reason: event.target.value })} /><button className="primary-button">Catat retur</button></form></section>
     {payment && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setPayment(null)}><form className="modal" onSubmit={savePayment}><div className="modal-heading"><div><h2>Pembayaran pemasok</h2><p className="muted">{payment.orderNumber} · sisa {idr(payment.balanceDue)}</p></div><button type="button" className="close-button" onClick={() => setPayment(null)}>×</button></div><label>Jumlah<input required min="0.01" max={payment.balanceDue} step="0.01" type="number" value={paymentForm.amount} onChange={(event) => setPaymentForm({ ...paymentForm, amount: event.target.value })} /></label><label>Metode<select value={paymentForm.method} onChange={(event) => setPaymentForm({ ...paymentForm, method: event.target.value })}><option value="cash">Tunai</option><option value="bank_transfer">Transfer bank</option><option value="qris">QRIS</option><option value="card">Kartu</option><option value="other">Lainnya</option></select></label><label>Referensi<input value={paymentForm.reference} onChange={(event) => setPaymentForm({ ...paymentForm, reference: event.target.value })} /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setPayment(null)}>Batal</button><button className="primary-button">Simpan pembayaran</button></div></form></div>}
+  </>
+}
+
+const emptyCoupon = { code: '', discountType: 'percent', discountValue: '', minimumOrderAmount: '0', usageLimit: '', startsAt: '', expiresAt: '', isActive: true }
+
+function couponDateInput(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return local.toISOString().slice(0, 16)
+}
+
+export function CouponsView() {
+  const [refresh, setRefresh] = useState(0)
+  const [coupons, , loadError] = useLoad('/coupons', refresh)
+  const [editing, setEditing] = useState(null)
+  const [form, setForm] = useState(emptyCoupon)
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const editCoupon = (coupon) => {
+    setEditing(coupon.id)
+    setForm({
+      code: coupon.code,
+      discountType: coupon.discountType,
+      discountValue: String(coupon.discountValue),
+      minimumOrderAmount: String(coupon.minimumOrderAmount || 0),
+      usageLimit: coupon.usageLimit === null ? '' : String(coupon.usageLimit),
+      startsAt: couponDateInput(coupon.startsAt),
+      expiresAt: couponDateInput(coupon.expiresAt),
+      isActive: coupon.isActive,
+    })
+  }
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setSaving(true)
+    setMessage('')
+    const payload = {
+      ...form,
+      code: form.code.trim().toUpperCase(),
+      discountValue: Number(form.discountValue),
+      minimumOrderAmount: Number(form.minimumOrderAmount),
+      usageLimit: form.usageLimit === '' ? null : Number(form.usageLimit),
+      startsAt: form.startsAt ? new Date(form.startsAt).toISOString() : null,
+      expiresAt: form.expiresAt ? new Date(form.expiresAt).toISOString() : null,
+    }
+    try {
+      await api(editing ? `/coupons/${editing}` : '/coupons', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload) })
+      setEditing(null)
+      setForm(emptyCoupon)
+      setRefresh((value) => value + 1)
+      setMessage(editing ? 'Kupon berhasil diperbarui.' : 'Kupon berhasil dibuat.')
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeCoupon = async (coupon) => {
+    if (!window.confirm(`Hapus kupon ${coupon.code}?`)) return
+    try {
+      await api(`/coupons/${coupon.id}`, { method: 'DELETE' })
+      setRefresh((value) => value + 1)
+      setMessage('Kupon berhasil dihapus.')
+    } catch (error) {
+      setMessage(error.message)
+    }
+  }
+
+  return <>
+    <header className="topbar"><div><p className="breadcrumb">Toko online / <span>Kupon</span></p><h1>Kupon promosi</h1></div><button className="filter-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={15} /> Muat ulang</button></header>
+    <section className="catalog-panel">
+      <div className="panel-heading"><div><h2>{editing ? 'Ubah kupon' : 'Buat kupon'}</h2><p className="muted">Persentase menggunakan angka 1–100; diskon nominal menggunakan rupiah.</p></div><TicketPercent size={20} /></div>
+      {(loadError || message) && <p className={loadError ? 'login-error' : 'success-message'}>{message || loadError}</p>}
+      <form className="toolbar coupon-form" onSubmit={submit}>
+        <label>Kode<input required maxLength="40" pattern="[A-Za-z0-9_-]{3,40}" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })} placeholder="PROMOHEMAT" /></label>
+        <label>Jenis diskon<select value={form.discountType} onChange={(event) => setForm({ ...form, discountType: event.target.value })}><option value="percent">Persentase</option><option value="fixed">Nominal</option></select></label>
+        <label>{form.discountType === 'percent' ? 'Persentase (%)' : 'Diskon (Rp)'}<input required type="number" min="0.01" step="0.01" max={form.discountType === 'percent' ? 100 : undefined} value={form.discountValue} onChange={(event) => setForm({ ...form, discountValue: event.target.value })} /></label>
+        <label>Minimum belanja (Rp)<input type="number" min="0" step="1" value={form.minimumOrderAmount} onChange={(event) => setForm({ ...form, minimumOrderAmount: event.target.value })} /></label>
+        <label>Batas pemakaian<input type="number" min="1" step="1" value={form.usageLimit} onChange={(event) => setForm({ ...form, usageLimit: event.target.value })} placeholder="Tanpa batas" /></label>
+        <label>Mulai<input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} /></label>
+        <label>Berakhir<input type="datetime-local" value={form.expiresAt} onChange={(event) => setForm({ ...form, expiresAt: event.target.value })} /></label>
+        <label className="toggle-row"><input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} /> Aktif</label>
+        <div className="coupon-form-actions">{editing && <button type="button" className="secondary-button" onClick={() => { setEditing(null); setForm(emptyCoupon) }}>Batal ubah</button>}<button className="primary-button" disabled={saving}>{saving ? 'Menyimpan...' : editing ? 'Simpan perubahan' : 'Buat kupon'}</button></div>
+      </form>
+    </section>
+    <section className="catalog-panel"><div className="table-wrap"><table><thead><tr><th>Kode</th><th>Diskon</th><th>Minimum</th><th>Pemakaian</th><th>Masa berlaku</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
+      {coupons.map((coupon) => <tr key={coupon.id}><td><strong>{coupon.code}</strong></td><td>{coupon.discountType === 'percent' ? `${coupon.discountValue}%` : idr(coupon.discountValue)}</td><td>{idr(coupon.minimumOrderAmount)}</td><td>{coupon.usageCount}{coupon.usageLimit === null ? '' : ` / ${coupon.usageLimit}`}</td><td>{coupon.startsAt ? new Date(coupon.startsAt).toLocaleString('id-ID') : '—'} – {coupon.expiresAt ? new Date(coupon.expiresAt).toLocaleString('id-ID') : '—'}</td><td><span className={`status ${coupon.isActive ? 'active' : 'out-of-stock'}`}><span></span>{coupon.isActive ? 'Aktif' : 'Nonaktif'}</span></td><td><div className="coupon-actions"><button className="secondary-button" onClick={() => editCoupon(coupon)}>Ubah</button><button className="secondary-button" onClick={() => removeCoupon(coupon)}>Hapus</button></div></td></tr>)}
+      {!coupons.length && <tr><td colSpan="7" className="empty-state">Belum ada kupon.</td></tr>}
+    </tbody></table></div></section>
   </>
 }

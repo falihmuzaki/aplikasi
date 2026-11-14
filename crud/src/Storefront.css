@@ -38,6 +38,8 @@
 .storefront-header-actions { gap: 20px; }
 .storefront-admin-link { color: #65756a; font-size: 12px; text-decoration: none; }
 .storefront-admin-link:hover { color: #176f5d; }
+.storefront-account-link { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: #65756a; background: transparent; font: inherit; font-size: 12px; }
+.storefront-account-link:hover { color: #176f5d; }
 .storefront-track-link { color: #176f5d; font-size: 12px; font-weight: 700; text-decoration: none; }
 .storefront-track-link:hover { text-decoration: underline; }
 .storefront-cart-link { gap: 8px; color: #1b5147; font-size: 12px; text-decoration: none; }
@@ -91,6 +93,8 @@
 .storefront-product-info { padding: 12px; }
 .storefront-product-info > small { color: #8a9a8f; font-size: 10px; }
 .storefront-product-info h3 { min-height: 38px; margin: 5px 0 9px; color: #203d35; font: 700 13px/1.45 var(--font-display, 'Segoe UI', sans-serif); }
+.storefront-variant-select { display: grid; gap: 5px; margin: 0 0 10px; color: #68786e; font-size: 10px; }
+.storefront-variant-select select { width: 100%; min-width: 0; padding: 8px; border: 1px solid #e3ebe5; border-radius: 6px; color: #203d35; background: #fff; font: inherit; }
 .storefront-product-info > strong { display: block; margin-bottom: 12px; color: #176c58; font: 800 14px var(--font-display, 'Segoe UI', sans-serif); }
 .storefront-product-info button, .storefront-checkout-button {
   display: inline-flex;
@@ -166,6 +170,7 @@
 .storefront-tracking-cancelled { padding: 10px; border-radius: 7px; color: #a53d43; background: #fff0ef; font-size: 11px; }
 .storefront-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: 18px; background: rgba(11, 28, 22, .58); }
 .storefront-checkout-modal { width: min(540px, 100%); max-height: calc(100svh - 36px); overflow-y: auto; padding: 23px; border: 1px solid #e3ece5; border-radius: 15px; background: #fff; box-shadow: 0 24px 70px rgba(12, 35, 25, .24); }
+.storefront-account-modal { width: min(620px, 100%); }
 .storefront-modal-heading { display: flex; justify-content: space-between; gap: 15px; margin-bottom: 17px; }
 .storefront-modal-heading p { margin: 0 0 5px; color: #277663; font-size: 9px; font-weight: 800; letter-spacing: 1.2px; }
 .storefront-modal-heading h2 { margin: 0; color: #203d35; font: 800 20px var(--font-display, 'Segoe UI', sans-serif); }
@@ -174,6 +179,22 @@
 .storefront-checkout-modal input:not([type="radio"]), .storefront-checkout-modal textarea { display: block; width: 100%; margin-top: 6px; padding: 10px 11px; border: 1px solid #dfe8e1; border-radius: 7px; outline: 0; color: #253d33; background: #fff; font: 12px var(--font-sans, 'Segoe UI', sans-serif); }
 .storefront-checkout-modal input:focus, .storefront-checkout-modal textarea:focus { border-color: #75b5a3; box-shadow: 0 0 0 3px rgba(43, 139, 112, .1); }
 .storefront-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.storefront-account-hint, .storefront-account-message { color: #6f8275; font-size: 11px; line-height: 1.55; }
+.storefront-account-message { padding: 9px 10px; border-radius: 7px; color: #176c58; background: #ecf7f0; }
+.storefront-account-points { margin: 0 0 12px; color: #607167; font-size: 11px; }
+.storefront-account-points strong { color: #176c58; }
+.storefront-account-actions { display: grid; gap: 9px; }
+.storefront-account-identity { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: #52635a; font-size: 12px; }
+.storefront-account-identity button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid #e3ebe5; border-radius: 6px; color: #65756a; background: #fff; font-size: 10px; }
+.storefront-account-orders { display: grid; gap: 10px; }
+.storefront-account-orders article { padding: 12px; border: 1px solid #e8eee9; border-radius: 8px; }
+.storefront-account-orders article > div { display: flex; justify-content: space-between; gap: 10px; color: #203d35; font-size: 11px; }
+.storefront-account-orders article > div span, .storefront-account-orders article > small { color: #78877e; font-size: 10px; }
+.storefront-account-orders ul { margin: 8px 0 0; padding-left: 17px; color: #68786e; font-size: 10px; }
+.storefront-discount-fields { display: grid; gap: 8px; margin: 12px 0; }
+.storefront-discount-fields > label { display: block; color: #52635a; font-size: 11px; font-weight: 650; }
+.storefront-discount-fields input { display: block; width: 100%; margin-top: 6px; padding: 10px 11px; border: 1px solid #dfe8e1; border-radius: 7px; color: #253d33; background: #fff; font: 12px var(--font-sans, 'Segoe UI', sans-serif); }
+.storefront-discount-fields .field-hint { display: block; margin-top: 4px; color: #829087; font-size: 10px; font-weight: 400; }
 .storefront-fulfillment { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 4px 0 14px; padding: 12px; border: 1px solid #e3ebe5; border-radius: 8px; }
 .storefront-fulfillment legend { padding: 0 4px; color: #52635a; font-size: 11px; font-weight: 700; }
 .storefront-fulfillment label { display: flex; align-items: center; gap: 7px; color: #53645a; font-size: 11px; }
@@ -198,6 +219,7 @@
   .storefront-brand small { display: none; }
   .storefront-header-actions { gap: 12px; }
   .storefront-admin-link { font-size: 10px; }
+  .storefront-account-link { font-size: 10px; }
   .storefront-track-link { font-size: 10px; }
   .storefront-cart-link { gap: 5px; }
   .storefront-cart-link span { display: none; }

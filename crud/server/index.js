@@ -8,8 +8,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Redis } from '@upstash/redis'
 import pg from 'pg'
-import { sendOtpEmail } from './mailer.js'
+import { sendCustomerStorefrontEmail, sendOtpEmail } from './mailer.js'
+import { createBackupObjectKey, uploadBackupToR2 } from './backup-storage.js'
+import { BiteshipError, createBiteshipOrder, getBiteshipRates, getBiteshipTracking } from './biteship.js'
+import { classifyMidtransStatus, createMidtransSnap, getMidtransTransactionStatus, parseMidtransAmountToCents, PaymentProviderError, verifyMidtransSignature } from './midtrans.js'
 import { validateStorefrontOrder } from './storefront-validation.js'
+import { calculateCouponDiscount, normalizeCouponInput } from './coupons.js'
 import {
   canAdvanceStorefrontFulfillmentStatus,
   createStorefrontTrackingToken,
@@ -39,6 +43,23 @@ function initializeSchema() {
 app.use(cors())
 app.use('/api/storefront', express.json({ limit: '32kb' }))
 app.use(express.json({ limit: '50mb' }))
+app.use((request, response, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) || !request.path.startsWith('/api/')) return next()
+  response.on('finish', () => {
+    if (response.statusCode < 200 || response.statusCode >= 300) return
+    const segments = request.path.split('/').filter(Boolean)
+    const resourceType = segments[1] || 'api'
+    const resourceId = segments.find((segment) => /^\d+$/.test(segment)) || null
+    const action = request.method === 'POST' ? 'create' : request.method === 'DELETE' ? 'delete' : request.method === 'PUT' ? 'update' : 'modify'
+    const actorType = request.userId ? 'user' : request.path.startsWith('/api/storefront/') ? 'customer' : request.path.startsWith('/api/auth/') ? 'anonymous' : 'system'
+    pool.query(
+      `INSERT INTO audit_logs (actor_id, actor_type, action, resource_type, resource_id, request_method, request_path, response_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [request.userId || null, actorType, action, resourceType.slice(0, 64), resourceId, request.method, request.path.slice(0, 255), response.statusCode],
+    ).catch((error) => console.error('Unable to write the application audit log.', error))
+  })
+  next()
+})
 
 if (process.env.VERCEL) {
   app.use((_request, _response, next) => {
@@ -66,11 +87,90 @@ if (!isProduction && !redis) console.warn('Upstash Redis is not configured; auth
 const TOKEN_TTL_SECONDS = 7 * 24 * 3600
 const backupTables = [
   'users', 'cash_sessions', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
-  'purchase_orders', 'purchase_order_items', 'purchase_payments', 'supplier_returns',
-  'supplier_return_items', 'sales_orders', 'sales_order_items', 'product_batches',
+  'purchase_orders', 'purchase_order_items', 'purchase_payments', 'supplier_returns', 'supplier_return_items',
+  'storefront_customer_accounts', 'storefront_coupons', 'sales_orders', 'payment_gateway_transactions', 'sales_order_items', 'product_batches',
   'sales_payments', 'sales_order_item_batches', 'warehouse_stocks', 'stock_movements',
-  'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses',
+  'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses', 'audit_logs',
+  'storefront_coupon_redemptions', 'storefront_loyalty_ledger',
 ]
+
+function getMidtransSettings() {
+  const serverKey = String(process.env.MIDTRANS_SERVER_KEY || '').trim()
+  const notificationUrl = String(process.env.MIDTRANS_NOTIFICATION_URL || '').trim()
+  const storefrontUrl = String(process.env.STOREFRONT_URL || '').trim()
+  if (!serverKey || !notificationUrl || !storefrontUrl) return null
+  const isProduction = String(process.env.MIDTRANS_IS_PRODUCTION || '').trim().toLowerCase() === 'true'
+  try {
+    const notification = new URL(notificationUrl)
+    const storefront = new URL(storefrontUrl)
+    if (notification.pathname.replace(/\/$/, '') !== '/api/payment/midtrans/notification') return null
+    if (isProduction && (notification.protocol !== 'https:' || storefront.protocol !== 'https:')) return null
+    if (!['https:', 'http:'].includes(notification.protocol) || !['https:', 'http:'].includes(storefront.protocol)) return null
+    return { serverKey, notificationUrl: notification.toString(), storefrontUrl: storefront.toString(), isProduction }
+  } catch {
+    return null
+  }
+}
+
+function getBiteshipSettings() {
+  const apiKey = String(process.env.BITESHIP_API_KEY || '').trim()
+  const originPostalCode = String(process.env.BITESHIP_ORIGIN_POSTAL_CODE || '17610').trim()
+  const couriers = String(process.env.BITESHIP_COURIERS || '').trim().toLowerCase()
+  if (!apiKey || !/^\d{5}$/.test(originPostalCode) || !/^[a-z0-9_-]+(?:,[a-z0-9_-]+)*$/.test(couriers)) return null
+  return { apiKey, originPostalCode, couriers }
+}
+
+function getBiteshipBookingSettings() {
+  const settings = getBiteshipSettings()
+  if (!settings) return null
+  const originContactName = String(process.env.BITESHIP_ORIGIN_CONTACT_NAME || '').trim()
+  const originContactPhone = String(process.env.BITESHIP_ORIGIN_CONTACT_PHONE || '').trim()
+  const originAddress = String(process.env.BITESHIP_ORIGIN_ADDRESS || '').trim()
+  if (!originContactName || !originContactPhone || !originAddress) return null
+  return {
+    ...settings,
+    originContactName,
+    originContactPhone,
+    originAddress,
+    originContactEmail: String(process.env.BITESHIP_ORIGIN_CONTACT_EMAIL || '').trim(),
+    organization: String(process.env.BITESHIP_ORGANIZATION || '').trim(),
+    collectionMethod: String(process.env.BITESHIP_ORIGIN_COLLECTION_METHOD || '').trim(),
+  }
+}
+
+function createStorefrontReturnUrl(storefrontUrl) {
+  const url = new URL(storefrontUrl)
+  url.searchParams.set('shop', '1')
+  url.hash = ''
+  return url.toString()
+}
+
+function createStorefrontTrackingUrl(token) {
+  const storefrontUrl = String(process.env.STOREFRONT_URL || '').trim()
+  if (!storefrontUrl) return null
+  try {
+    const url = new URL(storefrontUrl)
+    url.searchParams.set('shop', '1')
+    url.hash = `track=${encodeURIComponent(token)}`
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+async function createBackupPayload(client, createdAt = new Date().toISOString()) {
+  const tables = {}
+  for (const table of backupTables) {
+    const result = await client.query(`SELECT * FROM ${table}`)
+    tables[table] = result.rows.map((row) => {
+      if (table !== 'users') return row
+      const safeUser = { ...row }
+      for (const column of ['login_otp_hash', 'login_otp_expires_at', 'reset_otp_hash', 'reset_otp_expires_at', 'register_otp_hash', 'register_otp_expires_at']) delete safeUser[column]
+      return safeUser
+    })
+  }
+  return { format: 'ifal-store-backup', version: 3, createdAt, tables }
+}
 
 function createRateLimiter({ windowMs, max, message, prefix, unavailableMessage = 'Layanan autentikasi sedang tidak tersedia. Coba lagi nanti.' }) {
   const hits = new Map()
@@ -152,7 +252,7 @@ app.get('/api/products/lookup/:code', requireAuth, async (request, response, nex
   try {
     const code = String(request.params.code || '').trim()
     if (!code || code.length > 120) return response.status(400).json({ message: 'Barcode atau SKU tidak valid.' })
-    const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL AND (barcode=$1 OR sku=$1) LIMIT 1`, [code])
+    const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL AND (barcode=$1 OR sku=$1) AND NOT EXISTS (SELECT 1 FROM products child WHERE child.parent_product_id=products.id AND child.deleted_at IS NULL) LIMIT 1`, [code])
     if (!result.rowCount) return response.status(404).json({ message: 'Produk dengan barcode atau SKU tersebut tidak ditemukan.' })
     response.json(normalizeProduct(result.rows[0]))
   } catch (error) { next(error) }
@@ -176,6 +276,24 @@ const storefrontTrackingLimiter = createRateLimiter({
   message: 'Terlalu banyak permintaan pelacakan. Coba lagi nanti.',
   prefix: 'ifal-store:rate-limit:storefront-tracking',
   unavailableMessage: 'Pelacakan pesanan sedang tidak tersedia. Coba lagi nanti.',
+})
+const storefrontCustomerOtpLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: 'Terlalu banyak permintaan kode akun. Coba lagi nanti.',
+  prefix: 'ifal-store:rate-limit:customer-otp',
+})
+const storefrontCustomerVerifyLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: 'Terlalu banyak percobaan kode akun. Coba lagi nanti.',
+  prefix: 'ifal-store:rate-limit:customer-verify',
+})
+const storefrontCouponQuoteLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  message: 'Terlalu banyak pemeriksaan kupon. Coba lagi nanti.',
+  prefix: 'ifal-store:rate-limit:coupon-quote',
 })
 
 app.get('/api/product-batches', requireAuth, async (request, response, next) => {
@@ -251,12 +369,29 @@ app.post('/api/product-batches', requireAuth, async (request, response, next) =>
   } finally { client.release() }
 })
 
-const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, barcode, track_batches, deleted_at, created_at, updated_at'
+const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, barcode, track_batches, weight_grams, parent_product_id, variant_label, deleted_at, created_at, updated_at'
 const userFields = 'id, name, email, role, is_active, mfa_enabled, avatar_url, last_login_at, created_at, updated_at'
 const categoryFields = 'id, name, created_at, updated_at'
 
 function normalizeCategory(row) {
   return { id: Number(row.id), name: row.name, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function normalizeCoupon(row) {
+  return {
+    id: Number(row.id),
+    code: row.code,
+    discountType: row.discount_type,
+    discountValue: Number(row.discount_value),
+    minimumOrderAmount: Number(row.minimum_order_amount),
+    usageLimit: row.usage_limit === null ? null : Number(row.usage_limit),
+    usageCount: Number(row.usage_count),
+    startsAt: row.starts_at,
+    expiresAt: row.expires_at,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 function normalizeSupplier(row) {
@@ -326,9 +461,18 @@ function normalizeSalesOrder(row) {
   const payments = (row.payments || []).map((payment) => ({ ...payment, amount: Number(payment.amount) }))
   const discountRate = Number(row.discount_rate || 0)
   const taxRate = Number(row.tax_rate || 0)
+  const shippingFee = Number(row.shipping_fee || 0)
+  const couponDiscount = Number(row.coupon_discount || 0)
+  const loyaltyDiscount = Number(row.loyalty_discount || 0)
+  const originalSubtotalCents = items.reduce((sum, item) => sum + BigInt(Math.round(item.unitPrice * 100)) * BigInt(item.quantity), 0n)
   const subtotalCents = items.reduce((sum, item) => sum + BigInt(Math.round(item.unitPrice * 100)) * BigInt(item.quantity - item.returnedQuantity), 0n)
   const totals = calculateSaleTotals(subtotalCents, discountRate, taxRate)
-  const totalAmount = row.status === 'cancelled' ? 0 : totals.totalAmount
+  const fixedDiscount = originalSubtotalCents > 0n
+    ? (BigInt(Math.round((couponDiscount + loyaltyDiscount) * 100)) * subtotalCents + originalSubtotalCents / 2n) / originalSubtotalCents
+    : 0n
+  const totalAmount = row.status === 'cancelled'
+    ? 0
+    : Math.max(0, totals.totalAmount - Number(fixedDiscount) / 100) + shippingFee
   const netPaid = paidAmount - refundedAmount
   const refundDue = Math.round(Math.max(0, netPaid - totalAmount) * 100) / 100
   let paymentStatus = 'unpaid'
@@ -353,6 +497,22 @@ function normalizeSalesOrder(row) {
     fulfillmentMethod: row.fulfillment_method || 'pickup',
     deliveryAddress: row.delivery_address ?? null,
     fulfillmentStatus: row.fulfillment_status ?? null,
+    destinationPostalCode: row.destination_postal_code || null,
+    shippingFee,
+    couponCode: row.coupon_code || null,
+    couponDiscount,
+    loyaltyPointsRedeemed: Number(row.loyalty_points_redeemed || 0),
+    loyaltyDiscount,
+    shippingProvider: row.shipping_provider || null,
+    shippingCourierCode: row.shipping_courier_code || null,
+    shippingCourierName: row.shipping_courier_name || null,
+    shippingServiceCode: row.shipping_service_code || null,
+    shippingServiceName: row.shipping_service_name || null,
+    shippingOrderId: row.shipping_order_id || null,
+    shippingTrackingId: row.shipping_tracking_id || null,
+    shippingWaybillId: row.shipping_waybill_id || null,
+    shippingStatus: row.shipping_status || null,
+    shippingHistory: row.shipping_history || [],
     status: row.status,
     notes: row.notes,
     createdByName: row.created_by_name,
@@ -388,6 +548,64 @@ function calculateSaleTotals(subtotalCents, discountRate, taxRate) {
   }
 }
 
+async function awardStorefrontLoyaltyPoints(client, orderId, email) {
+  if (!email) return 0
+  const account = await client.query(
+    'SELECT id FROM storefront_customer_accounts WHERE email=lower($1) FOR UPDATE',
+    [email],
+  )
+  if (!account.rowCount) return 0
+  const orderResult = await client.query(`
+    SELECT so.status, so.coupon_discount, so.loyalty_discount,
+      COALESCE(SUM(soi.quantity * soi.unit_price),0)::numeric AS subtotal
+    FROM sales_orders so
+    LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
+    WHERE so.id=$1 AND so.source='online' AND lower(so.customer_email)=lower($2)
+    GROUP BY so.id
+  `, [orderId, email])
+  if (!orderResult.rowCount || orderResult.rows[0].status === 'cancelled') return 0
+  const order = orderResult.rows[0]
+  const eligibleCents = BigInt(Math.max(0, Math.round((
+    Number(order.subtotal) - Number(order.coupon_discount) - Number(order.loyalty_discount)
+  ) * 100)))
+  const points = Number(eligibleCents / 1_000_000n)
+  if (!points) return 0
+  const result = await client.query(`
+    INSERT INTO storefront_loyalty_ledger (customer_email, sales_order_id, entry_type, points)
+    VALUES (lower($1),$2,'earned',$3)
+    ON CONFLICT (sales_order_id, entry_type) DO NOTHING
+    RETURNING points
+  `, [email, orderId, points])
+  return Number(result.rows[0]?.points || 0)
+}
+
+async function restoreStorefrontLoyaltyPoints(client, orderId, email) {
+  if (!email) return
+  await client.query('SELECT id FROM storefront_customer_accounts WHERE email=lower($1) FOR UPDATE', [email])
+  const redeemed = await client.query(
+    "SELECT points FROM storefront_loyalty_ledger WHERE sales_order_id=$1 AND entry_type='redeemed'",
+    [orderId],
+  )
+  if (redeemed.rowCount) {
+    await client.query(`
+      INSERT INTO storefront_loyalty_ledger (customer_email, sales_order_id, entry_type, points)
+      VALUES (lower($1),$2,'restored',$3)
+      ON CONFLICT (sales_order_id, entry_type) DO NOTHING
+    `, [email, orderId, Math.abs(Number(redeemed.rows[0].points))])
+  }
+  const earned = await client.query(
+    "SELECT points FROM storefront_loyalty_ledger WHERE sales_order_id=$1 AND entry_type='earned'",
+    [orderId],
+  )
+  if (earned.rowCount) {
+    await client.query(`
+      INSERT INTO storefront_loyalty_ledger (customer_email, sales_order_id, entry_type, points)
+      VALUES (lower($1),$2,'reversed',$3)
+      ON CONFLICT (sales_order_id, entry_type) DO NOTHING
+    `, [email, orderId, -Math.abs(Number(earned.rows[0].points))])
+  }
+}
+
 function getProductStatus(stock, threshold) {
   return stock <= 0 ? 'Out of stock' : stock <= threshold ? 'Low stock' : 'Active'
 }
@@ -406,6 +624,10 @@ function normalizeProduct(row) {
     sku: row.sku ?? null,
     barcode: row.barcode ?? null,
     trackBatches: row.track_batches ?? false,
+    weightGrams: row.weight_grams === null || row.weight_grams === undefined ? null : Number(row.weight_grams),
+    parentProductId: row.parent_product_id === null || row.parent_product_id === undefined ? null : Number(row.parent_product_id),
+    variantLabel: row.variant_label || null,
+    isVariantParent: Boolean(row.has_variants),
     lowStockThreshold,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -415,7 +637,12 @@ function normalizeProduct(row) {
 function productValues(body) {
   const stock = Number(body.stock) || 0
   const lowStockThreshold = Math.max(0, Number.parseInt(body.lowStockThreshold, 10) || 5)
-  return [body.name, body.category, Number(body.price) || 0, stock, getProductStatus(stock, lowStockThreshold), body.media?.name || null, body.media?.type || null, body.media?.url || null, lowStockThreshold]
+  const weightGrams = body.weightGrams === null || body.weightGrams === undefined || body.weightGrams === '' ? null : Number(body.weightGrams)
+  return [body.name, body.category, Number(body.price) || 0, stock, getProductStatus(stock, lowStockThreshold), body.media?.name || null, body.media?.type || null, body.media?.url || null, lowStockThreshold, weightGrams]
+}
+
+function isValidProductWeight(weightGrams) {
+  return weightGrams === null || (Number.isSafeInteger(weightGrams) && weightGrams > 0 && weightGrams <= 1_000_000)
 }
 
 function isValidStockQuantity(stock) {
@@ -485,6 +712,10 @@ function verifyOtp(code, storedHash) {
   return expectedHash.length === derivedHash.length && crypto.timingSafeEqual(expectedHash, derivedHash)
 }
 
+function hashStorefrontCustomerSession(token) {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
 async function requireAuth(request, response, next) {
   const header = request.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : ''
@@ -494,6 +725,21 @@ async function requireAuth(request, response, next) {
     const result = await pool.query('SELECT is_active, auth_version FROM users WHERE id=$1', [payload.uid])
     if (!result.rows[0]?.is_active || Number(result.rows[0].auth_version) !== payload.version) return response.status(401).json({ message: 'Akun tidak aktif atau sesi tidak valid. Silakan masuk kembali.' })
     request.userId = payload.uid
+    next()
+  } catch (error) { next(error) }
+}
+
+async function requireStorefrontCustomer(request, response, next) {
+  const header = request.headers.authorization || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7) : ''
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return response.status(401).json({ message: 'Sesi akun pelanggan tidak valid. Silakan masuk kembali.' })
+  try {
+    const result = await pool.query(
+      'SELECT id, email, session_token_hash FROM storefront_customer_accounts WHERE session_token_hash=$1 AND session_expires_at>NOW()',
+      [hashStorefrontCustomerSession(token)],
+    )
+    if (!result.rowCount) return response.status(401).json({ message: 'Sesi akun pelanggan sudah berakhir. Silakan masuk kembali.' })
+    request.storefrontCustomer = result.rows[0]
     next()
   } catch (error) { next(error) }
 }
@@ -526,35 +772,145 @@ app.get('/api/backup', requireAuth, requireAdmin, async (_request, response, nex
   const client = await pool.connect()
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
-    const tables = {}
-    for (const table of backupTables) {
-      const result = await client.query(`SELECT * FROM ${table}`)
-      tables[table] = result.rows.map((row) => {
-        if (table !== 'users') return row
-        const safeUser = { ...row }
-        for (const column of ['login_otp_hash', 'login_otp_expires_at', 'reset_otp_hash', 'reset_otp_expires_at', 'register_otp_hash', 'register_otp_expires_at']) delete safeUser[column]
-        return safeUser
-      })
-    }
+    const backup = await createBackupPayload(client)
     await client.query('COMMIT')
     response.setHeader('Content-Type', 'application/json; charset=utf-8')
     response.setHeader('Content-Disposition', `attachment; filename="ifal-store-backup-${new Date().toISOString().slice(0, 10)}.json"`)
-    response.json({ format: 'ifal-store-backup', version: 1, createdAt: new Date().toISOString(), tables })
+    response.json(backup)
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
     next(error)
   } finally { client.release() }
 })
 
+app.get('/api/backup/scheduled', requireAuth, requireAdmin, async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT backup_date, object_key, status, size_bytes, error_code, started_at, completed_at
+      FROM scheduled_backup_runs
+      ORDER BY backup_date DESC
+      LIMIT 30
+    `)
+    response.json({
+      configured: Boolean(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_BUCKET_NAME && process.env.CRON_SECRET),
+      runs: result.rows.map((row) => ({
+        date: row.backup_date,
+        objectKey: row.object_key,
+        status: row.status,
+        sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes),
+        errorCode: row.error_code,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+      })),
+    })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/cron/backup', async (request, response) => {
+  const secret = String(process.env.CRON_SECRET || '').trim()
+  const authorization = Buffer.from(String(request.get('authorization') || ''))
+  const expectedAuthorization = Buffer.from(`Bearer ${secret}`)
+  if (!secret) return response.status(503).json({ message: 'Backup terjadwal belum dikonfigurasi.' })
+  if (authorization.length !== expectedAuthorization.length || !crypto.timingSafeEqual(authorization, expectedAuthorization)) {
+    return response.status(401).json({ message: 'Unauthorized.' })
+  }
+
+  const createdAt = new Date().toISOString()
+  const key = createBackupObjectKey(new Date(createdAt))
+  const backupDate = key.match(/\d{4}-\d{2}-\d{2}/)?.[0]
+  if (!backupDate) return response.status(500).json({ message: 'Tanggal backup tidak valid.' })
+  try {
+    const reservation = await pool.query(`
+      INSERT INTO scheduled_backup_runs (backup_date, object_key, status)
+      VALUES ($1,$2,'running')
+      ON CONFLICT (backup_date) DO UPDATE
+        SET object_key=EXCLUDED.object_key, status='running', size_bytes=NULL, error_code=NULL,
+            started_at=NOW(), completed_at=NULL
+        WHERE scheduled_backup_runs.status='failed'
+          OR (scheduled_backup_runs.status='running' AND scheduled_backup_runs.started_at < NOW() - INTERVAL '2 hours')
+      RETURNING backup_date
+    `, [backupDate, key])
+    if (!reservation.rowCount) {
+      const current = await pool.query('SELECT status, object_key FROM scheduled_backup_runs WHERE backup_date=$1', [backupDate])
+      if (current.rows[0]?.status === 'completed') {
+        return response.json({ message: 'Backup hari ini sudah tersimpan.', objectKey: current.rows[0].object_key })
+      }
+      return response.status(409).json({ message: 'Backup hari ini sedang berjalan. Coba lagi nanti.' })
+    }
+
+    const client = await pool.connect()
+    let backup
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+      backup = await createBackupPayload(client, createdAt)
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    } finally { client.release() }
+
+    const uploaded = await uploadBackupToR2(backup)
+    await pool.query(
+      "UPDATE scheduled_backup_runs SET status='completed', size_bytes=$1, error_code=NULL, completed_at=NOW() WHERE backup_date=$2",
+      [uploaded.sizeBytes, backupDate],
+    )
+    response.json({ message: 'Backup harian berhasil disimpan.', objectKey: uploaded.key, sizeBytes: uploaded.sizeBytes })
+  } catch (error) {
+    await pool.query(
+      "UPDATE scheduled_backup_runs SET status='failed', error_code=$1, completed_at=NOW() WHERE backup_date=$2",
+      [String(error.name || 'backup_failed').slice(0, 100), backupDate],
+    ).catch((recordError) => console.error('Unable to record the failed scheduled backup.', recordError))
+    console.error('Scheduled backup failed.', error.name || 'unknown_error')
+    response.status(500).json({ message: 'Backup harian gagal. Periksa konfigurasi dan log server.' })
+  }
+})
+
+app.get('/api/audit-log', requireAuth, requireAdmin, async (request, response, next) => {
+  const requestedLimit = Number.parseInt(String(request.query.limit || '100'), 10)
+  const limit = Number.isSafeInteger(requestedLimit) ? Math.min(200, Math.max(1, requestedLimit)) : 100
+  try {
+    const result = await pool.query(`
+      SELECT al.id, al.actor_id, u.name AS actor_name, al.actor_type, al.action,
+        al.resource_type, al.resource_id, al.request_method, al.request_path,
+        al.response_status, al.created_at
+      FROM audit_logs al
+      LEFT JOIN users u ON u.id=al.actor_id
+      ORDER BY al.created_at DESC, al.id DESC
+      LIMIT $1
+    `, [limit])
+    response.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      actorId: row.actor_id === null ? null : Number(row.actor_id),
+      actorName: row.actor_name,
+      actorType: row.actor_type,
+      action: row.action,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      method: row.request_method,
+      path: row.request_path,
+      responseStatus: row.response_status,
+      createdAt: row.created_at,
+    })))
+  } catch (error) { next(error) }
+})
+
 app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, response, next) => {
   const backup = request.body
-  if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) return response.status(400).json({ message: 'File backup tidak valid atau versinya tidak didukung.' })
-  const restoreTables = { ...backup.tables, cash_sessions: backup.tables.cash_sessions === undefined ? [] : backup.tables.cash_sessions }
-  if (backupTables.some((table) => !Array.isArray(restoreTables[table])) || Object.keys(backup.tables).some((table) => !backupTables.includes(table))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
-  const totalRows = backupTables.reduce((sum, table) => sum + restoreTables[table].length, 0)
+  if (backup?.format !== 'ifal-store-backup' || ![1, 2, 3].includes(backup.version) || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) return response.status(400).json({ message: 'File backup tidak valid atau versinya tidak didukung.' })
+  const optionalTables = new Set([
+    ...(backup.version === 1 ? ['audit_logs', 'payment_gateway_transactions', 'cash_sessions'] : []),
+    ...(backup.version < 3 ? ['storefront_customer_accounts', 'storefront_coupons', 'storefront_coupon_redemptions', 'storefront_loyalty_ledger'] : []),
+  ])
+  const requiredTables = backupTables.filter((table) => !optionalTables.has(table))
+  const restoreTables = { ...backup.tables }
+  for (const table of optionalTables) {
+    if (restoreTables[table] === undefined) restoreTables[table] = []
+  }
+  if (requiredTables.some((table) => !Array.isArray(restoreTables[table])) || Object.keys(restoreTables).some((table) => !backupTables.includes(table) || !Array.isArray(restoreTables[table]))) return response.status(400).json({ message: 'Isi backup tidak cocok dengan tabel aplikasi.' })
+  const totalRows = Object.values(restoreTables).reduce((sum, rows) => sum + rows.length, 0)
   if (totalRows > 300_000) return response.status(413).json({ message: 'Backup melebihi batas 300.000 baris.' })
-  for (const table of backupTables) {
-    if (restoreTables[table].some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
+  for (const [table, rows] of Object.entries(restoreTables)) {
+    if (rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return response.status(400).json({ message: `Data tabel ${table} tidak valid.` })
   }
   if (!restoreTables.users.some((user) => user.role === 'admin' && user.is_active === true && typeof user.password_hash === 'string' && /^[a-f\d]{32}:[a-f\d]{128}$/i.test(user.password_hash))) return response.status(400).json({ message: 'Backup harus berisi setidaknya satu akun admin aktif dengan hash kata sandi valid agar aplikasi tetap dapat diakses.' })
 
@@ -569,6 +925,7 @@ app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, respo
     const columnsByTable = new Map(backupTables.map((table) => [table, new Set()]))
     for (const column of columnResults.rows) columnsByTable.get(column.table_name)?.add(column.column_name)
     for (const table of backupTables) {
+      if (!Object.hasOwn(restoreTables, table)) continue
       const allowedColumns = columnsByTable.get(table)
       if (!allowedColumns?.size || restoreTables[table].some((row) => Object.keys(row).some((key) => !allowedColumns.has(key)))) {
         await client.query('ROLLBACK')
@@ -576,8 +933,11 @@ app.post('/api/backup/restore', requireAuth, requireAdmin, async (request, respo
       }
     }
 
-    for (const table of [...backupTables].reverse()) await client.query(`DELETE FROM ${table}`)
+    for (const table of [...backupTables].reverse()) {
+      if (Object.hasOwn(restoreTables, table)) await client.query(`DELETE FROM ${table}`)
+    }
     for (const table of backupTables) {
+      if (!Object.hasOwn(restoreTables, table)) continue
       const columns = [...columnsByTable.get(table)]
       for (const row of restoreTables[table]) {
         const presentColumns = columns.filter((column) => Object.hasOwn(row, column))
@@ -746,7 +1106,15 @@ app.post('/api/auth/register/resend', otpSendLimiter, async (request, response, 
 
 app.get('/api/products', requireAuth, async (_request, response, next) => {
   try {
-    const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL ORDER BY created_at DESC`)
+    const result = await pool.query(`
+      SELECT p.*, EXISTS (
+        SELECT 1 FROM products child
+        WHERE child.parent_product_id=p.id AND child.deleted_at IS NULL
+      ) AS has_variants
+      FROM products p
+      WHERE p.deleted_at IS NULL
+      ORDER BY p.created_at DESC
+    `)
     response.json(result.rows.map(normalizeProduct))
   } catch (error) { next(error) }
 })
@@ -754,29 +1122,102 @@ app.get('/api/products', requireAuth, async (_request, response, next) => {
 app.get('/api/storefront/products', async (_request, response, next) => {
   try {
     const result = await pool.query(`
-      SELECT p.id, p.name, p.category, p.price,
-        CASE WHEN p.media_type LIKE 'image/%' AND length(p.media_url)<=300000 THEN p.media_type ELSE NULL END AS media_type,
-        CASE WHEN p.media_type LIKE 'image/%' AND length(p.media_url)<=300000 THEN p.media_url ELSE NULL END AS media_url,
+      SELECT p.id, p.name, p.category, p.price, p.parent_product_id, p.variant_label,
+        parent.name AS parent_name,
+        CASE WHEN COALESCE(p.media_type,parent.media_type) LIKE 'image/%' AND length(COALESCE(p.media_url,parent.media_url))<=300000 THEN COALESCE(p.media_type,parent.media_type) ELSE NULL END AS media_type,
+        CASE WHEN COALESCE(p.media_type,parent.media_type) LIKE 'image/%' AND length(COALESCE(p.media_url,parent.media_url))<=300000 THEN COALESCE(p.media_url,parent.media_url) ELSE NULL END AS media_url,
         CASE WHEN p.track_batches THEN EXISTS (
           SELECT 1 FROM product_batches pb
           WHERE pb.product_id=p.id AND pb.warehouse_id=default_warehouse.id AND pb.quantity>0
         ) ELSE COALESCE(ws.stock, 0)>0 END AS available
       FROM products p
+      LEFT JOIN products parent ON parent.id=p.parent_product_id AND parent.deleted_at IS NULL
       CROSS JOIN (SELECT id FROM warehouses WHERE is_default=TRUE LIMIT 1) default_warehouse
       LEFT JOIN warehouse_stocks ws ON ws.warehouse_id=default_warehouse.id AND ws.product_id=p.id
       WHERE p.deleted_at IS NULL
+        AND (p.parent_product_id IS NOT NULL OR NOT EXISTS (
+          SELECT 1 FROM products child
+          WHERE child.parent_product_id=p.id AND child.deleted_at IS NULL
+        ))
       ORDER BY p.category, p.name
     `)
     response.set('Cache-Control', 'public, max-age=30')
     response.json(result.rows.map((row) => ({
       id: Number(row.id),
       name: row.name,
+      parentProductId: row.parent_product_id === null ? null : Number(row.parent_product_id),
+      parentName: row.parent_name || null,
+      variantLabel: row.variant_label || null,
       category: row.category,
       price: Number(row.price),
       available: row.available,
       media: row.media_url ? { type: row.media_type, url: row.media_url } : null,
     })))
   } catch (error) { next(error) }
+})
+
+app.get('/api/storefront/config', (_request, response) => {
+  response.set('Cache-Control', 'no-store')
+  response.json({
+    paymentEnabled: Boolean(getMidtransSettings()),
+    shippingEnabled: Boolean(getBiteshipSettings()),
+    shippingBookingEnabled: Boolean(getBiteshipBookingSettings()),
+  })
+})
+
+app.post('/api/storefront/shipping/quote', storefrontOrderLimiter, async (request, response) => {
+  const settings = getBiteshipSettings()
+  if (!settings) return response.status(503).json({ message: 'Tarif pengiriman online belum dikonfigurasi.' })
+  const destinationPostalCode = String(request.body?.destinationPostalCode || '').trim()
+  const items = Array.isArray(request.body?.items) ? request.body.items.map((item) => ({
+    productId: Number(item?.productId),
+    quantity: Number(item?.quantity),
+  })) : []
+  if (!/^\d{5}$/.test(destinationPostalCode)) return response.status(400).json({ message: 'Kode pos tujuan harus terdiri dari 5 angka.' })
+  if (items.length < 1 || items.length > 50
+    || items.some((item) => !Number.isSafeInteger(item.productId) || item.productId < 1 || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 10000)
+    || new Set(items.map((item) => item.productId)).size !== items.length) {
+    return response.status(400).json({ message: 'Produk atau jumlah untuk tarif pengiriman tidak valid.' })
+  }
+  try {
+    const productIds = items.map((item) => item.productId)
+    const result = await pool.query(
+      `SELECT id, name, price, weight_grams FROM products
+       WHERE id=ANY($1::bigint[]) AND deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM products child WHERE child.parent_product_id=products.id AND child.deleted_at IS NULL)`,
+      [productIds],
+    )
+    if (result.rowCount !== items.length) return response.status(409).json({ message: 'Salah satu produk sudah tidak tersedia.' })
+    const products = new Map(result.rows.map((product) => [String(product.id), product]))
+    const parcels = items.map((item) => {
+      const product = products.get(String(item.productId))
+      return {
+        name: String(product.name).slice(0, 100),
+        value: Math.round(Number(product.price)),
+        weight: Number(product.weight_grams),
+        quantity: item.quantity,
+      }
+    })
+    if (parcels.some((item) => !Number.isSafeInteger(item.weight) || item.weight < 1)) {
+      return response.status(409).json({ message: 'Isi berat produk terlebih dahulu untuk menghitung ongkir.' })
+    }
+    const rates = await getBiteshipRates({
+      apiKey: settings.apiKey,
+      originPostalCode: settings.originPostalCode,
+      destinationPostalCode,
+      couriers: settings.couriers,
+      items: parcels,
+    })
+    response.set('Cache-Control', 'no-store')
+    response.json(rates)
+  } catch (error) {
+    if (error instanceof BiteshipError) {
+      console.error('Biteship rate request failed.', error.code)
+      return response.status(502).json({ message: 'Tarif pengiriman gagal dimuat. Silakan coba lagi.' })
+    }
+    console.error('Unexpected Biteship rate request error.', error)
+    response.status(500).json({ message: 'Tarif pengiriman gagal dimuat.' })
+  }
 })
 
 app.get('/api/warehouses', requireAuth, async (_request, response, next) => {
@@ -1024,8 +1465,9 @@ app.get('/api/reports', requireAuth, requireAdmin, async (request, response, nex
     const to = String(request.query.to || '')
     if ((from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) || (to && !/^\d{4}-\d{2}-\d{2}$/.test(to))) return response.status(400).json({ message: 'Format tanggal laporan harus YYYY-MM-DD.' })
     const sales = await pool.query(`
-      SELECT so.id, so.discount_rate, so.tax_rate,
+      SELECT so.id, so.discount_rate, so.tax_rate, so.coupon_discount, so.loyalty_discount,
         COALESCE(SUM((soi.quantity-soi.returned_quantity)*soi.unit_price),0)::numeric AS subtotal,
+        COALESCE(SUM(soi.quantity*soi.unit_price),0)::numeric AS original_subtotal,
         COALESCE(SUM((soi.quantity-soi.returned_quantity)*soi.unit_cost),0)::numeric AS cost,
         COALESCE((SELECT SUM(amount) FROM sales_payments WHERE sales_order_id=so.id AND kind='payment'),0)::numeric AS payments,
         COALESCE((SELECT SUM(amount) FROM sales_payments WHERE sales_order_id=so.id AND kind='refund'),0)::numeric AS refunds
@@ -1047,19 +1489,37 @@ app.get('/api/reports', requireAuth, requireAdmin, async (request, response, nex
     `, [from, to])
     const bestsellers = await pool.query(`
       SELECT soi.product_id, soi.product_name, SUM(soi.quantity-soi.returned_quantity)::int AS units_sold,
-        SUM((soi.quantity-soi.returned_quantity)*soi.unit_price*(1-so.discount_rate/100))::numeric AS revenue,
-        SUM((soi.quantity-soi.returned_quantity)*(soi.unit_price*(1-so.discount_rate/100)-soi.unit_cost))::numeric AS gross_margin
+        SUM((soi.quantity-soi.returned_quantity)*soi.unit_price*(1-so.discount_rate/100)
+          - CASE WHEN original_order.subtotal > 0
+            THEN (so.coupon_discount+so.loyalty_discount)*(soi.quantity-soi.returned_quantity)*soi.unit_price/original_order.subtotal
+            ELSE 0 END)::numeric AS revenue,
+        SUM((soi.quantity-soi.returned_quantity)*(
+          soi.unit_price*(1-so.discount_rate/100)-soi.unit_cost
+          - CASE WHEN original_order.subtotal > 0
+            THEN (so.coupon_discount+so.loyalty_discount)*soi.unit_price/original_order.subtotal
+            ELSE 0 END
+        ))::numeric AS gross_margin
       FROM sales_order_items soi JOIN sales_orders so ON so.id=soi.sales_order_id
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(SUM(all_items.quantity*all_items.unit_price),0)::numeric AS subtotal
+        FROM sales_order_items all_items WHERE all_items.sales_order_id=so.id
+      ) original_order
       WHERE so.status<>'cancelled' AND ($1='' OR so.created_at::date >= $1::date) AND ($2='' OR so.created_at::date <= $2::date)
       GROUP BY soi.product_id, soi.product_name ORDER BY units_sold DESC, revenue DESC LIMIT 10
     `, [from, to])
     const salesTotals = sales.rows.reduce((totals, row) => {
       const subtotalCents = BigInt(Math.round(Number(row.subtotal) * 100))
+      const originalSubtotalCents = BigInt(Math.round(Number(row.original_subtotal) * 100))
       const orderTotals = calculateSaleTotals(subtotalCents, Number(row.discount_rate), Number(row.tax_rate))
-      totals.revenue += orderTotals.subtotal - orderTotals.discountAmount
-      totals.discountAmount += orderTotals.discountAmount
+      const fixedDiscountCents = originalSubtotalCents > 0n
+        ? (BigInt(Math.round((Number(row.coupon_discount) + Number(row.loyalty_discount)) * 100)) * subtotalCents + originalSubtotalCents / 2n) / originalSubtotalCents
+        : 0n
+      const totalDiscount = orderTotals.discountAmount + Number(fixedDiscountCents) / 100
+      const revenue = Math.max(0, orderTotals.subtotal - orderTotals.discountAmount - Number(fixedDiscountCents) / 100)
+      totals.revenue += revenue
+      totals.discountAmount += totalDiscount
       totals.taxAmount += orderTotals.taxAmount
-      totals.grossMargin += orderTotals.subtotal - orderTotals.discountAmount - Number(row.cost)
+      totals.grossMargin += revenue - Number(row.cost)
       totals.payments += Number(row.payments)
       totals.refunds += Number(row.refunds)
       return totals
@@ -1210,17 +1670,24 @@ app.get('/api/stats', requireAuth, async (_request, response, next) => {
       WITH order_totals AS (
         SELECT so.id, so.created_at::date AS sale_date,
           COALESCE(SUM((soi.quantity-soi.returned_quantity)*soi.unit_price), 0)::numeric AS subtotal,
+          COALESCE(SUM(soi.quantity*soi.unit_price), 0)::numeric AS original_subtotal,
+          (so.coupon_discount+so.loyalty_discount)::numeric AS fixed_discount,
           ROUND(so.discount_rate * 100)::bigint AS discount_basis_points
         FROM sales_orders so
         LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
         WHERE so.status <> 'cancelled'
           AND so.created_at >= CURRENT_DATE - INTERVAL '6 days'
           AND so.created_at < CURRENT_DATE + INTERVAL '1 day'
-        GROUP BY so.id, so.created_at::date, so.discount_rate
+        GROUP BY so.id, so.created_at::date, so.discount_rate, so.coupon_discount, so.loyalty_discount
       ),
       daily_orders AS (
-        SELECT id, sale_date,
-          (ROUND(subtotal * 100) - FLOOR((ROUND(subtotal * 100) * discount_basis_points + 5000) / 10000)) / 100 AS revenue
+        SELECT id, sale_date, GREATEST(0,
+          ROUND(subtotal * 100)
+          - FLOOR((ROUND(subtotal * 100) * discount_basis_points + 5000) / 10000)
+          - CASE WHEN original_subtotal > 0
+            THEN FLOOR((ROUND(fixed_discount * 100) * ROUND(subtotal * 100) / ROUND(original_subtotal * 100)) + 0.5)
+            ELSE 0 END
+        ) / 100 AS revenue
         FROM order_totals
       )
       SELECT TO_CHAR(calendar.day, 'YYYY-MM-DD') AS date,
@@ -1264,6 +1731,10 @@ app.post('/api/products', requireAuth, async (request, response, next) => {
     await client.query('BEGIN')
     const values = productValues(request.body)
     const stock = values[3]
+    if (!isValidProductWeight(values[9])) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Berat produk harus berupa bilangan bulat lebih dari 0 gram dan maksimal 1.000.000 gram.' })
+    }
     if (!isValidStockQuantity(stock)) {
       await client.query('ROLLBACK')
       return response.status(400).json({ message: 'Stok harus berupa bilangan bulat nonnegatif.' })
@@ -1294,7 +1765,7 @@ app.post('/api/products', requireAuth, async (request, response, next) => {
       // SAVEPOINT and rolls back to it on a 23505 collision before the next retry.
       await client.query('SAVEPOINT sku_attempt')
       try {
-        const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, barcode, track_batches) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${productFields}`, [...values, sku, barcode, trackBatches])
+        const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, barcode, track_batches, weight_grams) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${productFields}`, [...values.slice(0, 9), sku, barcode, trackBatches, values[9]])
         row = result.rows[0]
         await client.query('RELEASE SAVEPOINT sku_attempt')
         break
@@ -1319,11 +1790,73 @@ app.post('/api/products', requireAuth, async (request, response, next) => {
   }
 })
 
+app.post('/api/products/:id/variants', requireAuth, async (request, response, next) => {
+  const label = String(request.body?.label || '').trim()
+  const providedSku = String(request.body?.sku || '').trim() || null
+  const rawPrice = request.body?.price
+  const rawWeight = request.body?.weightGrams
+  if (!label || label.length > 120 || (providedSku && providedSku.length > 64)) {
+    return response.status(400).json({ message: 'Nama varian wajib diisi (maksimal 120 karakter) dan SKU maksimal 64 karakter.' })
+  }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const parentResult = await client.query(
+      'SELECT id, name, category, price, media_name, media_type, media_url, low_stock_threshold, weight_grams, parent_product_id FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',
+      [request.params.id],
+    )
+    if (!parentResult.rowCount || parentResult.rows[0].parent_product_id) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Produk utama tidak ditemukan.' })
+    }
+    const parent = parentResult.rows[0]
+    const parentStock = await client.query('SELECT COALESCE(SUM(stock),0)::int AS stock FROM warehouse_stocks WHERE product_id=$1', [parent.id])
+    if (Number(parentStock.rows[0].stock) > 0) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Kosongkan stok produk utama sebelum menjadikannya grup varian. Stok varian dicatat terpisah.' })
+    }
+    const name = `${parent.name} - ${label}`
+    if (name.length > 160) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Nama produk dan varian melebihi 160 karakter.' })
+    }
+    const price = rawPrice === undefined || rawPrice === '' ? Number(parent.price) : Number(rawPrice)
+    const weightGrams = rawWeight === undefined || rawWeight === '' || rawWeight === null
+      ? parent.weight_grams
+      : Number(rawWeight)
+    if (!Number.isFinite(price) || price < 0 || price > 9_999_999_999.99
+      || (weightGrams !== null && !isValidProductWeight(weightGrams))) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Harga atau berat varian tidak valid.' })
+    }
+    const warehouseResult = await client.query('SELECT id FROM warehouses WHERE is_default=TRUE')
+    if (!warehouseResult.rowCount) throw new Error('Gudang utama belum dikonfigurasi.')
+    const sku = providedSku || generateSku()
+    const result = await client.query(`
+      INSERT INTO products
+        (name, category, price, stock, status, low_stock_threshold, sku,
+         track_batches, weight_grams, parent_product_id, variant_label)
+      VALUES ($1,$2,$3,0,'Out of stock',$4,$5,FALSE,$6,$7,$8)
+      RETURNING ${productFields}
+    `, [name, parent.category, price, parent.low_stock_threshold, sku, weightGrams, parent.id, label])
+    await client.query(
+      'INSERT INTO warehouse_stocks (warehouse_id, product_id, stock) VALUES ($1,$2,0)',
+      [warehouseResult.rows[0].id, result.rows[0].id],
+    )
+    await client.query('COMMIT')
+    response.status(201).json(normalizeProduct(result.rows[0]))
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    if (error.code === '23505') return response.status(409).json({ message: 'Nama varian atau SKU sudah digunakan.' })
+    next(error)
+  } finally { client.release() }
+})
+
 app.put('/api/products/:id', requireAuth, async (request, response, next) => {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const existing = await client.query('SELECT stock, sku, track_batches FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [request.params.id])
+    const existing = await client.query('SELECT stock, sku, track_batches, parent_product_id FROM products WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [request.params.id])
     if (!existing.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Product not found' })
@@ -1331,6 +1864,10 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
     const oldStock = existing.rows[0].stock
     const values = productValues(request.body)
     const newStock = values[3]
+    if (!isValidProductWeight(values[9])) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Berat produk harus berupa bilangan bulat lebih dari 0 gram dan maksimal 1.000.000 gram.' })
+    }
     if (!isValidStockQuantity(newStock)) {
       await client.query('ROLLBACK')
       return response.status(400).json({ message: 'Stok harus berupa bilangan bulat nonnegatif.' })
@@ -1338,6 +1875,13 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
     if (newStock !== oldStock && !(await isActiveAdmin(request.userId))) {
       await client.query('ROLLBACK')
       return response.status(403).json({ message: 'Perubahan stok manual hanya dapat dilakukan oleh admin. Staf dapat mencatat stok melalui transaksi pembelian atau penjualan.' })
+    }
+    if (newStock !== oldStock && !existing.rows[0].parent_product_id) {
+      const variants = await client.query('SELECT 1 FROM products WHERE parent_product_id=$1 AND deleted_at IS NULL LIMIT 1', [request.params.id])
+      if (variants.rowCount) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Stok dikelola per varian. Ubah stok melalui masing-masing produk varian.' })
+      }
     }
     const barcode = String(request.body.barcode || '').trim() || null
     if (barcode && barcode.length > 120) {
@@ -1358,7 +1902,14 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
     }
     const provided = String(request.body.sku || '').trim()
     const sku = provided || existing.rows[0].sku
-    const result = await client.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, low_stock_threshold=$9, sku=$10, barcode=$11, track_batches=$12, updated_at=NOW() WHERE id=$13 RETURNING ${productFields}`, [...values, sku, barcode, trackBatches, request.params.id])
+    const result = await client.query(`UPDATE products SET name=$1, category=$2, price=$3, stock=$4, status=$5, media_name=$6, media_type=$7, media_url=$8, low_stock_threshold=$9, sku=$10, barcode=$11, track_batches=$12, weight_grams=$13, updated_at=NOW() WHERE id=$14 RETURNING ${productFields}`, [...values.slice(0, 9), sku, barcode, trackBatches, values[9], request.params.id])
+    const variantCheck = await client.query('SELECT 1 FROM products WHERE parent_product_id=$1 AND deleted_at IS NULL LIMIT 1', [request.params.id])
+    if (!existing.rows[0].parent_product_id) {
+      await client.query(
+        "UPDATE products SET name=$1 || ' - ' || variant_label, updated_at=NOW() WHERE parent_product_id=$2 AND deleted_at IS NULL",
+        [values[0], request.params.id],
+      )
+    }
     const defaultStock = newStock - otherStockResult.rows[0].stock
     await client.query('INSERT INTO warehouse_stocks (warehouse_id, product_id, stock) VALUES ($1,$2,$3) ON CONFLICT (warehouse_id, product_id) DO UPDATE SET stock=EXCLUDED.stock', [defaultWarehouseId, request.params.id, defaultStock])
     if (newStock !== oldStock) {
@@ -1368,7 +1919,7 @@ app.put('/api/products/:id', requireAuth, async (request, response, next) => {
       await client.query('INSERT INTO stock_movements (product_id, warehouse_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [request.params.id, defaultWarehouseId, request.userId, userName, newStock - oldStock, oldStock, newStock, reason])
     }
     await client.query('COMMIT')
-    response.json(normalizeProduct(result.rows[0]))
+    response.json(normalizeProduct({ ...result.rows[0], has_variants: variantCheck.rowCount > 0 }))
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
     next(error)
@@ -1393,6 +1944,8 @@ app.put('/api/products/:id/metadata', requireAuth, async (request, response, nex
 
 app.delete('/api/products/:id', requireAuth, async (request, response, next) => {
   try {
+    const variants = await pool.query('SELECT COUNT(*)::int AS count FROM products WHERE parent_product_id=$1 AND deleted_at IS NULL', [request.params.id])
+    if (variants.rows[0]?.count > 0) return response.status(409).json({ message: 'Arsipkan semua varian produk terlebih dahulu.' })
     const result = await pool.query('UPDATE products SET deleted_at=NOW(), updated_at=NOW() WHERE id=$1 AND deleted_at IS NULL', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
     response.status(204).end()
@@ -1404,11 +1957,16 @@ app.post('/api/products/:id/restore', requireAuth, async (request, response, nex
     const result = await pool.query(`UPDATE products SET deleted_at=NULL, updated_at=NOW() WHERE id=$1 AND deleted_at IS NOT NULL RETURNING ${productFields}`, [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
     response.json(normalizeProduct(result.rows[0]))
-  } catch (error) { next(error) }
+  } catch (error) {
+    if (error.code === '23505') return response.status(409).json({ message: 'Label varian sudah digunakan produk aktif lainnya.' })
+    next(error)
+  }
 })
 
 app.delete('/api/products/:id/permanent', requireAuth, requireAdmin, async (request, response, next) => {
   try {
+    const variants = await pool.query('SELECT COUNT(*)::int AS count FROM products WHERE parent_product_id=$1', [request.params.id])
+    if (variants.rows[0]?.count > 0) return response.status(409).json({ message: 'Produk utama memiliki riwayat varian dan tidak dapat dihapus permanen.' })
     const result = await pool.query('DELETE FROM products WHERE id=$1', [request.params.id])
     if (!result.rowCount) return response.status(404).json({ message: 'Product not found' })
     response.status(204).end()
@@ -1491,6 +2049,7 @@ app.post('/api/products/bulk', requireAuth, async (request, response) => {
       try {
         const values = productValues(body)
         const stock = values[3]
+        if (!isValidProductWeight(values[9])) throw new Error('Berat produk harus berupa bilangan bulat lebih dari 0 gram dan maksimal 1.000.000 gram.')
         if (!isValidStockQuantity(stock)) throw new Error('Stok harus berupa bilangan bulat nonnegatif.')
         const provided = String(body.sku || '').trim()
         let row
@@ -1501,7 +2060,7 @@ app.post('/api/products/bulk', requireAuth, async (request, response) => {
           // transaction; roll back to it before retrying with a fresh SKU.
           await client.query('SAVEPOINT sku_attempt')
           try {
-            const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${productFields}`, [...values, sku])
+            const result = await client.query(`INSERT INTO products (name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, weight_grams) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${productFields}`, [...values.slice(0, 9), sku, values[9]])
             row = result.rows[0]
             await client.query('RELEASE SAVEPOINT sku_attempt')
             break
@@ -1711,7 +2270,10 @@ app.post('/api/purchases', requireAuth, async (request, response, next) => {
 
     for (const item of normalizedItems) {
       const productResult = await client.query(
-        'SELECT id, name, sku FROM products WHERE id=$1 AND deleted_at IS NULL FOR SHARE',
+        `SELECT id, name, sku FROM products
+         WHERE id=$1 AND deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM products child WHERE child.parent_product_id=products.id AND child.deleted_at IS NULL)
+         FOR SHARE`,
         [item.productId],
       )
       if (!productResult.rowCount) {
@@ -2014,6 +2576,252 @@ async function readSalesOrders(where = '', values = []) {
   return result.rows.map(normalizeSalesOrder)
 }
 
+async function restoreExpiredStorefrontOrder(client, order) {
+  if (order.source !== 'online' || ['cancelled', 'returned'].includes(order.status)) return
+  const linesResult = await client.query(`
+    SELECT soi.id, soi.product_id, soi.product_name, soi.quantity, soi.returned_quantity,
+           p.stock, p.low_stock_threshold, p.track_batches
+    FROM sales_order_items soi
+    JOIN products p ON p.id=soi.product_id
+    WHERE soi.sales_order_id=$1
+    ORDER BY soi.id
+    FOR UPDATE OF soi, p
+  `, [order.id])
+  for (const line of linesResult.rows) {
+    const quantity = Number(line.quantity) - Number(line.returned_quantity)
+    if (!quantity) continue
+    const warehouseStockResult = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [order.warehouse_id, line.product_id])
+    const warehouseStock = Number(warehouseStockResult.rows[0]?.stock || 0)
+    const productStock = Number(line.stock)
+    if (productStock + quantity > 2_147_483_647 || warehouseStock + quantity > 2_147_483_647) {
+      throw new Error(`Stock limit exceeded while releasing an expired online order.`)
+    }
+    const stockAfter = productStock + quantity
+    const warehouseStockAfter = warehouseStock + quantity
+    await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, getProductStatus(stockAfter, Number(line.low_stock_threshold)), line.product_id])
+    await client.query('INSERT INTO warehouse_stocks (warehouse_id, product_id, stock) VALUES ($1,$2,$3) ON CONFLICT (warehouse_id, product_id) DO UPDATE SET stock=EXCLUDED.stock', [order.warehouse_id, line.product_id, warehouseStockAfter])
+    if (line.track_batches) {
+      const allocations = await client.query('SELECT product_batch_id, quantity, returned_quantity FROM sales_order_item_batches WHERE sales_order_item_id=$1 FOR UPDATE', [line.id])
+      let remaining = quantity
+      for (const allocation of allocations.rows) {
+        if (!remaining) break
+        const restorable = Number(allocation.quantity) - Number(allocation.returned_quantity)
+        const restore = Math.min(remaining, restorable)
+        if (!restore) continue
+        await client.query('UPDATE product_batches SET quantity=quantity+$1 WHERE id=$2', [restore, allocation.product_batch_id])
+        await client.query('UPDATE sales_order_item_batches SET returned_quantity=quantity WHERE sales_order_item_id=$1 AND product_batch_id=$2', [line.id, allocation.product_batch_id])
+        remaining -= restore
+      }
+      if (remaining) throw new Error(`Batch allocation is incomplete while releasing an expired online order.`)
+    }
+    await client.query(
+      'INSERT INTO stock_movements (product_id, warehouse_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7)',
+      [line.product_id, order.warehouse_id, 'Midtrans', quantity, warehouseStock, warehouseStockAfter, `Expired payment ${order.order_number}`],
+    )
+  }
+  await restoreStorefrontLoyaltyPoints(client, order.id, order.customer_email)
+  await client.query("UPDATE sales_orders SET status='cancelled', updated_at=NOW() WHERE id=$1", [order.id])
+}
+
+app.get('/api/coupons', requireAuth, requireAdmin, async (_request, response, next) => {
+  try {
+    const result = await pool.query('SELECT * FROM storefront_coupons ORDER BY created_at DESC, id DESC')
+    response.json(result.rows.map(normalizeCoupon))
+  } catch (error) { next(error) }
+})
+
+app.post('/api/coupons', requireAuth, requireAdmin, async (request, response, next) => {
+  const validation = normalizeCouponInput(request.body)
+  if (validation.error) return response.status(400).json({ message: validation.error })
+  const coupon = validation.data
+  try {
+    const result = await pool.query(`
+      INSERT INTO storefront_coupons
+        (code, discount_type, discount_value, minimum_order_amount, usage_limit, starts_at, expires_at, is_active)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      RETURNING *
+    `, [coupon.code, coupon.discountType, coupon.discountValue, coupon.minimumOrderAmount, coupon.usageLimit, coupon.startsAt, coupon.expiresAt, coupon.isActive])
+    response.status(201).json(normalizeCoupon(result.rows[0]))
+  } catch (error) {
+    if (error.code === '23505') return response.status(409).json({ message: 'Kode kupon sudah digunakan.' })
+    next(error)
+  }
+})
+
+app.put('/api/coupons/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  const validation = normalizeCouponInput(request.body)
+  if (validation.error) return response.status(400).json({ message: validation.error })
+  const coupon = validation.data
+  try {
+    const result = await pool.query(`
+      UPDATE storefront_coupons
+      SET code=$1, discount_type=$2, discount_value=$3, minimum_order_amount=$4,
+          usage_limit=$5, starts_at=$6, expires_at=$7, is_active=$8, updated_at=NOW()
+      WHERE id=$9
+      RETURNING *
+    `, [coupon.code, coupon.discountType, coupon.discountValue, coupon.minimumOrderAmount, coupon.usageLimit, coupon.startsAt, coupon.expiresAt, coupon.isActive, request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Kupon tidak ditemukan.' })
+    response.json(normalizeCoupon(result.rows[0]))
+  } catch (error) {
+    if (error.code === '23505') return response.status(409).json({ message: 'Kode kupon sudah digunakan.' })
+    next(error)
+  }
+})
+
+app.delete('/api/coupons/:id', requireAuth, requireAdmin, async (request, response, next) => {
+  try {
+    const result = await pool.query('DELETE FROM storefront_coupons WHERE id=$1', [request.params.id])
+    if (!result.rowCount) return response.status(404).json({ message: 'Kupon tidak ditemukan.' })
+    response.status(204).end()
+  } catch (error) {
+    if (error.code === '23503') return response.status(409).json({ message: 'Kupon yang sudah digunakan tidak dapat dihapus. Nonaktifkan kupon tersebut.' })
+    next(error)
+  }
+})
+
+app.post('/api/storefront/coupons/quote', storefrontCouponQuoteLimiter, async (request, response, next) => {
+  const code = String(request.body?.code || '').trim().toUpperCase()
+  const subtotal = Number(request.body?.subtotal)
+  if (!/^[A-Z0-9_-]{3,40}$/.test(code) || !Number.isFinite(subtotal) || subtotal < 0 || subtotal > 9_999_999_999.99) {
+    return response.status(400).json({ message: 'Kode kupon atau subtotal tidak valid.' })
+  }
+  try {
+    const result = await pool.query(`
+      SELECT * FROM storefront_coupons
+      WHERE code=$1 AND is_active=TRUE
+        AND (starts_at IS NULL OR starts_at<=NOW())
+        AND (expires_at IS NULL OR expires_at>NOW())
+        AND (usage_limit IS NULL OR usage_count<usage_limit)
+    `, [code])
+    if (!result.rowCount) return response.status(404).json({ message: 'Kupon tidak berlaku.' })
+    const discount = calculateCouponDiscount(BigInt(Math.round(subtotal * 100)), result.rows[0])
+    if (discount.error) return response.status(400).json({ message: discount.error })
+    response.json({ code, discountAmount: Number(discount.discountCents) / 100 })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/storefront/account/otp', storefrontCustomerOtpLimiter, async (request, response, next) => {
+  const email = String(request.body?.email || '').trim().toLowerCase()
+  if (email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return response.status(400).json({ message: 'Masukkan alamat email yang valid.' })
+  }
+  const code = generateOtp()
+  try {
+    await pool.query(`
+      INSERT INTO storefront_customer_accounts (email, otp_hash, otp_expires_at, otp_attempts, updated_at)
+      VALUES ($1,$2,NOW() + INTERVAL '10 minutes',0,NOW())
+      ON CONFLICT (email) DO UPDATE
+      SET otp_hash=EXCLUDED.otp_hash, otp_expires_at=EXCLUDED.otp_expires_at, otp_attempts=0, updated_at=NOW()
+    `, [email, hashOtp(code)])
+    await sendOtpEmail({ to: email, code, purpose: 'customer_login' })
+    response.json({ message: 'Kode masuk telah dikirim dan berlaku 10 menit.' })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/storefront/account/verify', storefrontCustomerVerifyLimiter, async (request, response, next) => {
+  const email = String(request.body?.email || '').trim().toLowerCase()
+  const otp = String(request.body?.otp || '')
+  if (email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\d{6}$/.test(otp)) {
+    return response.status(400).json({ message: 'Email atau kode OTP tidak valid.' })
+  }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await client.query(
+      'SELECT id, otp_hash, otp_expires_at, otp_attempts FROM storefront_customer_accounts WHERE email=$1 FOR UPDATE',
+      [email],
+    )
+    const account = result.rows[0]
+    if (!account || !account.otp_hash || Number(account.otp_attempts) >= 5
+      || new Date(account.otp_expires_at) <= new Date() || !verifyOtp(otp, account.otp_hash)) {
+      if (account) await client.query(
+        'UPDATE storefront_customer_accounts SET otp_attempts=otp_attempts+1, updated_at=NOW() WHERE id=$1',
+        [account.id],
+      )
+      await client.query('COMMIT')
+      return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
+    }
+    const token = crypto.randomBytes(32).toString('base64url')
+    await client.query(`
+      UPDATE storefront_customer_accounts
+      SET otp_hash=NULL, otp_expires_at=NULL, otp_attempts=0,
+          session_token_hash=$1, session_expires_at=NOW() + INTERVAL '30 days', updated_at=NOW()
+      WHERE id=$2
+    `, [hashStorefrontCustomerSession(token), account.id])
+    await client.query('COMMIT')
+    await clearRateLimit(request)
+    response.json({ email, token })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.get('/api/storefront/account/orders', requireStorefrontCustomer, async (request, response, next) => {
+  response.set('Cache-Control', 'no-store')
+  try {
+    const result = await pool.query(`
+      SELECT so.order_number, so.status, so.fulfillment_status, so.fulfillment_method,
+        so.created_at, so.updated_at, so.discount_rate, so.tax_rate, so.shipping_fee,
+        so.coupon_discount, so.loyalty_discount,
+        COALESCE((SELECT SUM((soi.quantity-soi.returned_quantity) * soi.unit_price) FROM sales_order_items soi WHERE soi.sales_order_id=so.id),0)::numeric AS subtotal,
+        COALESCE((SELECT SUM(soi.quantity * soi.unit_price) FROM sales_order_items soi WHERE soi.sales_order_id=so.id),0)::numeric AS original_subtotal,
+        COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='payment'),0)::numeric AS paid_amount,
+        COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='refund'),0)::numeric AS refunded_amount,
+        (SELECT pgt.status FROM payment_gateway_transactions pgt WHERE pgt.sales_order_id=so.id) AS gateway_status,
+        COALESCE((SELECT json_agg(json_build_object(
+          'name', soi.product_name, 'quantity', soi.quantity, 'returnedQuantity', soi.returned_quantity
+        ) ORDER BY soi.id) FROM sales_order_items soi WHERE soi.sales_order_id=so.id), '[]'::json) AS items
+      FROM sales_orders so
+      WHERE so.source='online' AND lower(so.customer_email)=lower($1)
+      ORDER BY so.created_at DESC
+      LIMIT 100
+    `, [request.storefrontCustomer.email])
+    const loyaltyResult = await pool.query(
+      'SELECT COALESCE(SUM(points),0)::int AS points FROM storefront_loyalty_ledger WHERE lower(customer_email)=lower($1)',
+      [request.storefrontCustomer.email],
+    )
+    response.json({
+      email: request.storefrontCustomer.email,
+      loyaltyPoints: loyaltyResult.rows[0].points,
+      orders: result.rows.map((row) => {
+        const subtotalCents = BigInt(Math.round(Number(row.subtotal || 0) * 100))
+        const originalSubtotalCents = BigInt(Math.round(Number(row.original_subtotal || 0) * 100))
+        const totals = calculateSaleTotals(subtotalCents, Number(row.discount_rate || 0), Number(row.tax_rate || 0))
+        const fixedDiscountCents = originalSubtotalCents > 0n
+          ? (BigInt(Math.round((Number(row.coupon_discount || 0) + Number(row.loyalty_discount || 0)) * 100)) * subtotalCents + originalSubtotalCents / 2n) / originalSubtotalCents
+          : 0n
+        const totalAmount = row.status === 'cancelled'
+          ? 0
+          : Math.max(0, totals.totalAmount - Number(fixedDiscountCents) / 100) + Number(row.shipping_fee || 0)
+        const netPaid = Number(row.paid_amount || 0) - Number(row.refunded_amount || 0)
+        return {
+          orderNumber: row.order_number,
+          status: row.status,
+          fulfillmentStatus: row.fulfillment_status,
+          fulfillmentMethod: row.fulfillment_method,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          totalAmount,
+          paymentStatus: netPaid >= totalAmount ? 'paid' : netPaid > 0 ? 'partial' : 'unpaid',
+          gatewayStatus: row.gateway_status,
+          items: row.items,
+        }
+      }),
+    })
+  } catch (error) { next(error) }
+})
+
+app.delete('/api/storefront/account/session', requireStorefrontCustomer, async (request, response, next) => {
+  try {
+    await pool.query(
+      'UPDATE storefront_customer_accounts SET session_token_hash=NULL, session_expires_at=NULL, updated_at=NOW() WHERE id=$1 AND session_token_hash=$2',
+      [request.storefrontCustomer.id, request.storefrontCustomer.session_token_hash],
+    )
+    response.status(204).end()
+  } catch (error) { next(error) }
+})
+
 app.get('/api/storefront/orders/track', storefrontTrackingLimiter, async (request, response, next) => {
   response.set('Cache-Control', 'no-store')
   const trackingToken = request.get('X-Order-Tracking-Token') || ''
@@ -2021,7 +2829,11 @@ app.get('/api/storefront/orders/track', storefrontTrackingLimiter, async (reques
   try {
     const result = await pool.query(`
       SELECT so.order_number, so.status, so.fulfillment_status, so.fulfillment_method,
-        so.discount_rate, so.tax_rate, so.created_at, so.updated_at,
+        so.discount_rate, so.tax_rate, so.shipping_fee, so.coupon_discount, so.loyalty_discount,
+        so.shipping_provider, so.shipping_courier_name,
+        so.shipping_service_name, so.shipping_tracking_id, so.shipping_waybill_id, so.shipping_status,
+        so.created_at, so.updated_at,
+        (SELECT pgt.status FROM payment_gateway_transactions pgt WHERE pgt.sales_order_id=so.id) AS gateway_status,
         COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='payment'), 0) AS paid_amount,
         COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='refund'), 0) AS refunded_amount,
         COALESCE(json_agg(json_build_object(
@@ -2040,9 +2852,15 @@ app.get('/api/storefront/orders/track', storefrontTrackingLimiter, async (reques
     const subtotalCents = order.items.reduce((sum, item) => (
       sum + BigInt(Math.round(Number(item.unitPrice) * 100)) * BigInt(Number(item.quantity) - Number(item.returnedQuantity))
     ), 0n)
+    const originalSubtotalCents = order.items.reduce((sum, item) => (
+      sum + BigInt(Math.round(Number(item.unitPrice) * 100)) * BigInt(Number(item.quantity))
+    ), 0n)
+    const fixedDiscountCents = originalSubtotalCents > 0n
+      ? (BigInt(Math.round((Number(order.coupon_discount || 0) + Number(order.loyalty_discount || 0)) * 100)) * subtotalCents + originalSubtotalCents / 2n) / originalSubtotalCents
+      : 0n
     const totalAmount = order.status === 'cancelled'
       ? 0
-      : calculateSaleTotals(subtotalCents, Number(order.discount_rate || 0), Number(order.tax_rate || 0)).totalAmount
+      : Math.max(0, calculateSaleTotals(subtotalCents, Number(order.discount_rate || 0), Number(order.tax_rate || 0)).totalAmount - Number(fixedDiscountCents) / 100) + Number(order.shipping_fee || 0)
     const paidAmount = Math.round(Number(order.paid_amount || 0) * 100) / 100
     const refundedAmount = Math.round(Number(order.refunded_amount || 0) * 100) / 100
     const netPaid = Math.round((paidAmount - refundedAmount) * 100) / 100
@@ -2060,11 +2878,19 @@ app.get('/api/storefront/orders/track', storefrontTrackingLimiter, async (reques
       status: order.status,
       fulfillmentStatus: order.status === 'cancelled' ? 'cancelled' : order.fulfillment_status,
       fulfillmentMethod: order.fulfillment_method,
+      shippingFee: Number(order.shipping_fee || 0),
+      shippingProvider: order.shipping_provider,
+      shippingCourierName: order.shipping_courier_name,
+      shippingServiceName: order.shipping_service_name,
+      shippingTrackingId: order.shipping_tracking_id,
+      shippingWaybillId: order.shipping_waybill_id,
+      shippingStatus: order.shipping_status,
       createdAt: order.created_at,
       updatedAt: order.updated_at,
       totalAmount,
       balanceDue: Math.round(Math.max(0, totalAmount - netPaid) * 100) / 100,
       paymentStatus,
+      gatewayStatus: order.gateway_status || null,
       items: order.items.map((item) => ({
         productName: item.productName,
         quantity: Number(item.quantity),
@@ -2078,10 +2904,127 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
   const validation = validateStorefrontOrder(request.body)
   if (validation.error) return response.status(400).json({ message: validation.error })
   const orderInput = validation.data
+  const couponCode = String(request.body?.couponCode || '').trim().toUpperCase()
+  const loyaltyPointsRedeemed = Number(request.body?.loyaltyPointsRedeemed || 0)
+  const customerToken = String(request.headers.authorization || '').startsWith('Bearer ')
+    ? String(request.headers.authorization).slice(7)
+    : ''
+  if ((couponCode && !/^[A-Z0-9_-]{3,40}$/.test(couponCode))
+    || !Number.isSafeInteger(loyaltyPointsRedeemed) || loyaltyPointsRedeemed < 0
+    || loyaltyPointsRedeemed % 100 !== 0
+    || (loyaltyPointsRedeemed > 0 && !customerToken)) {
+    return response.status(400).json({ message: 'Kode kupon atau jumlah poin loyalti tidak valid. Poin harus kelipatan 100 dan membutuhkan akun pelanggan.' })
+  }
+  if (customerToken && !/^[A-Za-z0-9_-]{43}$/.test(customerToken)) {
+    return response.status(401).json({ message: 'Sesi akun pelanggan tidak valid. Silakan masuk kembali.' })
+  }
+  const paymentMethod = String(request.body?.paymentMethod || 'manual')
+  if (!['manual', 'midtrans'].includes(paymentMethod)) return response.status(400).json({ message: 'Metode pembayaran tidak valid.' })
+  const midtransSettings = paymentMethod === 'midtrans' ? getMidtransSettings() : null
+  if (paymentMethod === 'midtrans' && !midtransSettings) return response.status(503).json({ message: 'Pembayaran online belum dikonfigurasi. Hubungi admin toko.' })
+  if (paymentMethod === 'midtrans' && !orderInput.customerEmail) return response.status(400).json({ message: 'Email wajib diisi untuk pembayaran Midtrans.' })
+  const biteshipSettings = orderInput.fulfillmentMethod === 'delivery' ? getBiteshipSettings() : null
+  let shippingRate = null
+  let shippingProducts = new Map()
+  if (biteshipSettings) {
+    if (!orderInput.destinationPostalCode || !orderInput.shippingOption) {
+      return response.status(400).json({ message: 'Pilih layanan kurir dan masukkan kode pos tujuan sebelum membuat pesanan.' })
+    }
+    try {
+      const productIds = orderInput.items.map((item) => item.productId)
+      const productResult = await pool.query(
+        `SELECT id, name, price, weight_grams FROM products
+         WHERE id=ANY($1::bigint[]) AND deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM products child WHERE child.parent_product_id=products.id AND child.deleted_at IS NULL)`,
+        [productIds],
+      )
+      if (productResult.rowCount !== orderInput.items.length) return response.status(409).json({ message: 'Salah satu produk sudah tidak tersedia.' })
+      shippingProducts = new Map(productResult.rows.map((product) => [String(product.id), product]))
+      const parcels = orderInput.items.map((item) => {
+        const product = shippingProducts.get(String(item.productId))
+        return {
+          name: String(product.name).slice(0, 100),
+          value: Math.round(Number(product.price)),
+          weight: Number(product.weight_grams),
+          quantity: item.quantity,
+        }
+      })
+      if (parcels.some((item) => !Number.isSafeInteger(item.weight) || item.weight < 1)) {
+        return response.status(409).json({ message: 'Isi berat produk terlebih dahulu untuk menghitung ongkir.' })
+      }
+      const rates = await getBiteshipRates({
+        apiKey: biteshipSettings.apiKey,
+        originPostalCode: biteshipSettings.originPostalCode,
+        destinationPostalCode: orderInput.destinationPostalCode,
+        couriers: biteshipSettings.couriers,
+        items: parcels,
+      })
+      shippingRate = rates.find((rate) => (
+        rate.courierCode === orderInput.shippingOption.courierCode
+        && rate.serviceCode === orderInput.shippingOption.serviceCode
+      ))
+      if (!shippingRate || shippingRate.price !== orderInput.shippingOption.price) {
+        return response.status(409).json({ message: 'Tarif kurir berubah atau layanan tidak tersedia. Hitung ulang ongkir dan pilih layanan kembali.' })
+      }
+    } catch (error) {
+      if (error instanceof BiteshipError) {
+        console.error('Biteship checkout rate verification failed.', error.code)
+        return response.status(502).json({ message: 'Tarif pengiriman gagal diverifikasi. Silakan coba lagi.' })
+      }
+      return next(error)
+    }
+  } else if (orderInput.shippingOption) {
+    return response.status(503).json({ message: 'Integrasi tarif pengiriman belum dikonfigurasi.' })
+  }
+  const shippingFee = shippingRate?.price || 0
   const trackingToken = createStorefrontTrackingToken()
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    let storefrontAccount = null
+    let loyaltyPointBalance = 0
+    if (customerToken) {
+      const accountResult = await client.query(`
+        SELECT id, email FROM storefront_customer_accounts
+        WHERE session_token_hash=$1 AND session_expires_at>NOW()
+        FOR UPDATE
+      `, [hashStorefrontCustomerSession(customerToken)])
+      storefrontAccount = accountResult.rows[0] || null
+      if (!storefrontAccount) {
+        await client.query('ROLLBACK')
+        return response.status(401).json({ message: 'Sesi akun pelanggan sudah berakhir. Silakan masuk kembali.' })
+      }
+      if (orderInput.customerEmail && orderInput.customerEmail !== storefrontAccount.email) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Email checkout harus sama dengan email akun pelanggan.' })
+      }
+      orderInput.customerEmail = storefrontAccount.email
+      const balanceResult = await client.query(
+        'SELECT COALESCE(SUM(points),0)::int AS points FROM storefront_loyalty_ledger WHERE lower(customer_email)=lower($1)',
+        [storefrontAccount.email],
+      )
+      loyaltyPointBalance = Number(balanceResult.rows[0].points)
+    }
+    if (loyaltyPointsRedeemed > loyaltyPointBalance) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Saldo poin loyalti tidak mencukupi.' })
+    }
+    let coupon = null
+    if (couponCode) {
+      const couponResult = await client.query(`
+        SELECT * FROM storefront_coupons
+        WHERE code=$1 AND is_active=TRUE
+          AND (starts_at IS NULL OR starts_at<=NOW())
+          AND (expires_at IS NULL OR expires_at>NOW())
+          AND (usage_limit IS NULL OR usage_count<usage_limit)
+        FOR UPDATE
+      `, [couponCode])
+      coupon = couponResult.rows[0] || null
+      if (!coupon) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Kupon tidak berlaku atau kuota sudah habis.' })
+      }
+    }
     const warehouseResult = await client.query('SELECT id FROM warehouses WHERE is_default=TRUE FOR SHARE')
     if (!warehouseResult.rowCount) {
       await client.query('ROLLBACK')
@@ -2090,10 +3033,18 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
     const warehouseId = warehouseResult.rows[0].id
     const orderResult = await client.query(
       `INSERT INTO sales_orders
-        (customer_name, customer_email, customer_phone, warehouse_id, notes, source, fulfillment_method, delivery_address, fulfillment_status, tracking_token_hash)
-       VALUES ($1,$2,$3,$4,$5,'online',$6,$7,'pending',$8)
+        (customer_name, customer_email, customer_phone, warehouse_id, notes, source, fulfillment_method, delivery_address, fulfillment_status, tracking_token_hash,
+         destination_postal_code, shipping_fee, shipping_provider, shipping_courier_code, shipping_courier_name, shipping_service_code, shipping_service_name, shipping_status)
+       VALUES ($1,$2,$3,$4,$5,'online',$6,$7,'pending',$8,$9,$10,$11,$12,$13,$14,$15,$16)
        RETURNING id, created_at`,
-      [orderInput.customerName, orderInput.customerEmail, orderInput.customerPhone, warehouseId, orderInput.notes, orderInput.fulfillmentMethod, orderInput.deliveryAddress, hashStorefrontTrackingToken(trackingToken)],
+      [
+        orderInput.customerName, orderInput.customerEmail, orderInput.customerPhone, warehouseId, orderInput.notes,
+        orderInput.fulfillmentMethod, orderInput.deliveryAddress, hashStorefrontTrackingToken(trackingToken),
+        orderInput.destinationPostalCode, shippingFee, shippingRate ? 'biteship' : null,
+        shippingRate?.courierCode || null, shippingRate?.courierName || null,
+        shippingRate?.serviceCode || null, shippingRate?.serviceName || null,
+        shippingRate ? 'quoted' : null,
+      ],
     )
     const order = orderResult.rows[0]
     const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
@@ -2102,15 +3053,17 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
     await client.query('UPDATE sales_orders SET order_number=$1, invoice_number=$2 WHERE id=$3', [orderNumber, invoiceNumber, order.id])
 
     let subtotalCents = 0n
+    const midtransItems = []
     for (const item of [...orderInput.items].sort((a, b) => a.productId - b.productId)) {
       const productResult = await client.query(`
-        SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches,
+        SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches, p.weight_grams,
           (SELECT poi.unit_cost FROM purchase_order_items poi
             JOIN purchase_orders po ON po.id=poi.purchase_order_id
             WHERE poi.product_id=p.id AND poi.received_quantity>0
             ORDER BY po.created_at DESC, poi.id DESC LIMIT 1) AS last_unit_cost
         FROM products p
         WHERE p.id=$1 AND p.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM products child WHERE child.parent_product_id=p.id AND child.deleted_at IS NULL)
         FOR UPDATE
       `, [item.productId])
       if (!productResult.rowCount) {
@@ -2118,6 +3071,16 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
         return response.status(409).json({ message: 'Salah satu produk sudah tidak tersedia.' })
       }
       const product = productResult.rows[0]
+      const quotedProduct = shippingProducts.get(String(product.id))
+      if (shippingRate && (
+        String(quotedProduct.id) !== String(product.id)
+        || quotedProduct.name !== product.name
+        || Math.round(Number(quotedProduct.price)) !== Math.round(Number(product.price))
+        || Number(quotedProduct.weight_grams) !== Number(product.weight_grams)
+      )) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Data produk berubah saat tarif dihitung. Hitung ulang ongkir.' })
+      }
       const warehouseStockResult = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [warehouseId, product.id])
       const warehouseStock = Number(warehouseStockResult.rows[0]?.stock || 0)
       if (item.quantity > warehouseStock || item.quantity > Number(product.stock)) {
@@ -2126,10 +3089,17 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
       }
 
       const [wholePrice, fractionalPrice = ''] = String(product.price).split('.')
+      if (paymentMethod === 'midtrans' && fractionalPrice.padEnd(2, '0') !== '00') {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: `Harga "${product.name}" harus berupa rupiah bulat untuk pembayaran Midtrans.` })
+      }
       subtotalCents += (BigInt(wholePrice) * 100n + BigInt(fractionalPrice.padEnd(2, '0'))) * BigInt(item.quantity)
       if (subtotalCents > 999_999_999_999n) {
         await client.query('ROLLBACK')
         return response.status(400).json({ message: 'Total pesanan melebihi batas nominal.' })
+      }
+      if (paymentMethod === 'midtrans') {
+        midtransItems.push({ id: String(product.sku || product.id).slice(0, 50), price: Number(wholePrice), quantity: item.quantity, name: String(product.name).slice(0, 50) })
       }
 
       const stockAfter = Number(product.stock) - item.quantity
@@ -2138,8 +3108,8 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
       await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, product.id])
       await client.query('UPDATE warehouse_stocks SET stock=$1 WHERE warehouse_id=$2 AND product_id=$3', [warehouseStockAfter, warehouseId, product.id])
       const salesItemResult = await client.query(
-        'INSERT INTO sales_order_items (sales_order_id, product_id, product_name, sku, quantity, unit_price, unit_cost) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-        [order.id, product.id, product.name, product.sku, item.quantity, product.price, Number(product.last_unit_cost || 0)],
+        'INSERT INTO sales_order_items (sales_order_id, product_id, product_name, sku, quantity, unit_price, unit_cost, weight_grams) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+        [order.id, product.id, product.name, product.sku, item.quantity, product.price, Number(product.last_unit_cost || 0), product.weight_grams],
       )
 
       if (product.track_batches) {
@@ -2163,19 +3133,249 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
         [product.id, warehouseId, 'Pelanggan online', -item.quantity, warehouseStock, warehouseStockAfter, `Online order ${orderNumber}`],
       )
     }
+    const couponDiscountResult = coupon ? calculateCouponDiscount(subtotalCents, coupon) : { discountCents: 0n }
+    if (couponDiscountResult.error) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: couponDiscountResult.error })
+    }
+    const couponDiscountCents = couponDiscountResult.discountCents
+    const loyaltyDiscountCents = BigInt(loyaltyPointsRedeemed) * 1000n
+    if (couponDiscountCents + loyaltyDiscountCents > subtotalCents) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Diskon kupon dan penukaran poin melebihi subtotal produk.' })
+    }
+    const discountedSubtotalCents = subtotalCents - couponDiscountCents - loyaltyDiscountCents
+    if (paymentMethod === 'midtrans' && (couponDiscountCents > 0n || loyaltyDiscountCents > 0n)) {
+      midtransItems.splice(0, midtransItems.length)
+      if (discountedSubtotalCents > 0n) {
+        midtransItems.push({
+          id: 'ifal-store-products',
+          price: Number(discountedSubtotalCents / 100n),
+          quantity: 1,
+          name: 'Produk Ifal Store',
+        })
+      }
+    }
+    const orderTotalCents = discountedSubtotalCents + BigInt(shippingFee) * 100n
+    if (orderTotalCents > 999_999_999_999n) {
+      await client.query('ROLLBACK')
+      return response.status(400).json({ message: 'Total pesanan melebihi batas nominal.' })
+    }
+    if (shippingFee && paymentMethod === 'midtrans') {
+      midtransItems.push({
+        id: 'shipping',
+        price: shippingFee,
+        quantity: 1,
+        name: `Ongkir ${shippingRate.courierName} ${shippingRate.serviceName}`.slice(0, 50),
+      })
+    }
+    await client.query(`
+      UPDATE sales_orders
+      SET coupon_id=$1, coupon_code=$2, coupon_discount=$3,
+          loyalty_points_redeemed=$4, loyalty_discount=$5
+      WHERE id=$6
+    `, [
+      coupon?.id || null,
+      coupon?.code || null,
+      Number(couponDiscountCents) / 100,
+      loyaltyPointsRedeemed,
+      Number(loyaltyDiscountCents) / 100,
+      order.id,
+    ])
+    if (coupon) {
+      await client.query('UPDATE storefront_coupons SET usage_count=usage_count+1, updated_at=NOW() WHERE id=$1', [coupon.id])
+      await client.query('INSERT INTO storefront_coupon_redemptions (coupon_id, sales_order_id) VALUES ($1,$2)', [coupon.id, order.id])
+    }
+    if (loyaltyPointsRedeemed > 0 && storefrontAccount) {
+      await client.query(`
+        INSERT INTO storefront_loyalty_ledger (customer_email, sales_order_id, entry_type, points)
+        VALUES (lower($1),$2,'redeemed',$3)
+      `, [storefrontAccount.email, order.id, -loyaltyPointsRedeemed])
+    }
+    let redirectUrl = null
+    if (paymentMethod === 'midtrans') {
+      if (orderTotalCents <= 0n || orderTotalCents % 100n !== 0n || orderTotalCents / 100n > 9_999_999_999n) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Total Midtrans harus berupa rupiah bulat dan lebih dari nol.' })
+      }
+      try {
+        const snap = await createMidtransSnap({
+          serverKey: midtransSettings.serverKey,
+          isProduction: midtransSettings.isProduction,
+          payload: {
+            transaction_details: { order_id: orderNumber, gross_amount: Number(orderTotalCents / 100n) },
+            customer_details: {
+              first_name: orderInput.customerName,
+              email: orderInput.customerEmail,
+              phone: orderInput.customerPhone,
+            },
+            item_details: midtransItems,
+            callbacks: { finish: createStorefrontReturnUrl(midtransSettings.storefrontUrl) },
+          },
+        })
+        redirectUrl = snap.redirectUrl
+        await client.query(
+          `INSERT INTO payment_gateway_transactions (sales_order_id, provider, order_id, status, gross_amount, expires_at)
+           VALUES ($1,'midtrans',$2,'pending',$3,NOW() + INTERVAL '24 hours')`,
+          [order.id, orderNumber, Number(orderTotalCents / 100n)],
+        )
+      } catch (error) {
+        await client.query('ROLLBACK')
+        if (error instanceof PaymentProviderError) {
+          console.error('Midtrans checkout could not be created.', error.code)
+          return response.status(502).json({ message: 'Pembayaran online belum berhasil dibuat. Silakan coba lagi.' })
+        }
+        throw error
+      }
+    }
 
     await client.query('COMMIT')
+    await sendCustomerStorefrontEmail({
+      to: orderInput.customerEmail,
+      subject: `Pesanan ${orderNumber} berhasil dibuat`,
+      title: 'Pesanan Anda berhasil dibuat',
+      lines: [
+        `Nomor pesanan: ${orderNumber}`,
+        `Total pesanan: Rp ${(Number(orderTotalCents) / 100).toLocaleString('id-ID')}`,
+        paymentMethod === 'midtrans' ? 'Silakan lanjutkan pembayaran melalui halaman Midtrans.' : 'Silakan hubungi toko untuk konfirmasi pembayaran.',
+      ],
+      trackingUrl: createStorefrontTrackingUrl(trackingToken),
+    })
     response.status(201).json({
       orderNumber,
       invoiceNumber,
-      totalAmount: Number(subtotalCents) / 100,
+      subtotal: Number(subtotalCents) / 100,
+      couponCode: coupon?.code || null,
+      couponDiscount: Number(couponDiscountCents) / 100,
+      loyaltyPointsRedeemed,
+      loyaltyDiscount: Number(loyaltyDiscountCents) / 100,
+      loyaltyPointsBalance: loyaltyPointBalance - loyaltyPointsRedeemed,
+      shippingFee,
+      totalAmount: Number(orderTotalCents) / 100,
       fulfillmentMethod: orderInput.fulfillmentMethod,
       trackingToken,
+      paymentMethod,
+      redirectUrl,
     })
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
     next(error)
   } finally { client.release() }
+})
+
+app.post('/api/payment/midtrans/notification', async (request, response, next) => {
+  const settings = getMidtransSettings()
+  if (!settings) return response.status(503).json({ message: 'Notifikasi Midtrans belum dikonfigurasi.' })
+  const notification = request.body
+  if (!verifyMidtransSignature(notification, settings.serverKey)) return response.status(401).json({ message: 'Signature not valid.' })
+  const orderId = notification.order_id
+  try {
+    const stored = await pool.query(
+      'SELECT sales_order_id, gross_amount::text AS gross_amount FROM payment_gateway_transactions WHERE provider=$1 AND order_id=$2',
+      ['midtrans', orderId],
+    )
+    if (!stored.rowCount) return response.status(404).json({ message: 'Transaksi tidak ditemukan.' })
+
+    const status = await getMidtransTransactionStatus({
+      serverKey: settings.serverKey,
+      isProduction: settings.isProduction,
+      orderId,
+    })
+    const expectedCents = parseMidtransAmountToCents(stored.rows[0].gross_amount)
+    const notifiedCents = parseMidtransAmountToCents(notification.gross_amount)
+    const actualCents = parseMidtransAmountToCents(status.gross_amount)
+    if (status.order_id !== orderId || expectedCents === null || notifiedCents !== expectedCents || actualCents !== expectedCents) {
+      return response.status(400).json({ message: 'Data transaksi Midtrans tidak cocok dengan pesanan.' })
+    }
+
+    const decision = status.status_code === '200'
+      ? classifyMidtransStatus(status.transaction_status, status.fraud_status)
+      : 'unknown'
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const orderResult = await client.query(
+        'SELECT id, order_number, status AS order_status, source, warehouse_id, customer_email FROM sales_orders WHERE id=$1 FOR UPDATE',
+        [stored.rows[0].sales_order_id],
+      )
+      const gatewayResult = await client.query(`
+        SELECT id, sales_order_id, status AS gateway_status, paid_at, gross_amount::text AS gross_amount
+        FROM payment_gateway_transactions
+        WHERE provider='midtrans' AND order_id=$1
+        FOR UPDATE
+      `, [orderId])
+      if (!orderResult.rowCount || !gatewayResult.rowCount || String(gatewayResult.rows[0].sales_order_id) !== String(orderResult.rows[0].id)) {
+        await client.query('ROLLBACK')
+        return response.status(404).json({ message: 'Transaksi tidak ditemukan.' })
+      }
+      const transaction = { ...orderResult.rows[0], ...gatewayResult.rows[0] }
+      const paid = decision === 'paid' && !transaction.paid_at
+      const resolvedStatus = transaction.paid_at && decision !== 'paid'
+        ? transaction.gateway_status
+        : String(status.transaction_status).slice(0, 32)
+      if (paid) {
+        if (!status.transaction_id) throw new Error('Midtrans status is missing its transaction ID.')
+        const latePaymentNote = transaction.order_status === 'cancelled'
+          ? 'Pembayaran Midtrans diterima setelah pesanan dibatalkan; perlu ditinjau.'
+          : 'Pembayaran Midtrans terverifikasi.'
+        await client.query(
+          `INSERT INTO sales_payments (sales_order_id, kind, amount, method, reference, notes, recorded_by_name)
+           VALUES ($1,'payment',$2,'other',$3,$4,'Midtrans')`,
+          [transaction.sales_order_id, Number(expectedCents) / 100, `midtrans:${status.transaction_id}`, latePaymentNote],
+        )
+      }
+      await client.query(`
+        UPDATE payment_gateway_transactions
+        SET status=$1, fraud_status=$2, payment_type=$3,
+            provider_transaction_id=COALESCE($4, provider_transaction_id),
+            expires_at=COALESCE($5, expires_at),
+            paid_at=CASE WHEN $6 THEN COALESCE(paid_at,NOW()) ELSE paid_at END,
+            last_notification_at=NOW(), updated_at=NOW()
+        WHERE id=$7
+      `, [
+        resolvedStatus,
+        status.fraud_status ? String(status.fraud_status).slice(0, 24) : null,
+        status.payment_type ? String(status.payment_type).slice(0, 32) : null,
+        status.transaction_id ? String(status.transaction_id).slice(0, 120) : null,
+        status.expiry_time || null,
+        paid,
+        transaction.id,
+      ])
+      if (decision === 'failed' && !transaction.paid_at) {
+        await restoreExpiredStorefrontOrder(client, {
+          ...transaction,
+          id: transaction.sales_order_id,
+          status: transaction.order_status,
+        })
+      }
+      if (paid && transaction.order_status !== 'cancelled') {
+        transaction.loyaltyPointsEarned = await awardStorefrontLoyaltyPoints(
+          client,
+          transaction.sales_order_id,
+          transaction.customer_email,
+        )
+      }
+      await client.query('COMMIT')
+      if (paid) {
+        await sendCustomerStorefrontEmail({
+          to: transaction.customer_email,
+          subject: `Pembayaran pesanan ${transaction.order_number} berhasil`,
+          title: transaction.order_status === 'cancelled' ? 'Pembayaran perlu ditinjau toko' : 'Pembayaran pesanan berhasil',
+          lines: [
+            `Nomor pesanan: ${transaction.order_number}`,
+            `Jumlah terverifikasi: Rp ${(Number(expectedCents) / 100).toLocaleString('id-ID')}`,
+            transaction.order_status === 'cancelled'
+              ? 'Pembayaran diterima setelah pesanan dibatalkan. Silakan hubungi toko untuk tindak lanjut.'
+              : 'Pembayaran Anda telah terverifikasi oleh Midtrans.',
+          ],
+        })
+      }
+      response.json({ received: true })
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    } finally { client.release() }
+  } catch (error) { next(error) }
 })
 
 app.get('/api/sales', requireAuth, async (_request, response, next) => {
@@ -2190,7 +3390,7 @@ app.patch('/api/sales/:id/fulfillment', requireAuth, async (request, response, n
   try {
     await client.query('BEGIN')
     const orderResult = await client.query(
-      'SELECT source, status, fulfillment_method, fulfillment_status FROM sales_orders WHERE id=$1 FOR UPDATE',
+      'SELECT source, status, fulfillment_method, fulfillment_status, order_number, customer_email FROM sales_orders WHERE id=$1 FOR UPDATE',
       [orderId],
     )
     if (!orderResult.rowCount) {
@@ -2211,6 +3411,15 @@ app.patch('/api/sales/:id/fulfillment', requireAuth, async (request, response, n
       [nextStatus, orderId],
     )
     await client.query('COMMIT')
+    await sendCustomerStorefrontEmail({
+      to: order.customer_email,
+      subject: `Pembaruan pesanan ${order.order_number}`,
+      title: 'Status pesanan Anda diperbarui',
+      lines: [
+        `Nomor pesanan: ${order.order_number}`,
+        `Status baru: ${nextStatus.replaceAll('_', ' ')}`,
+      ],
+    })
     response.json({
       id: orderId,
       fulfillmentStatus: updateResult.rows[0].fulfillment_status,
@@ -2220,6 +3429,183 @@ app.patch('/api/sales/:id/fulfillment', requireAuth, async (request, response, n
     await client.query('ROLLBACK').catch(() => {})
     next(error)
   } finally { client.release() }
+})
+
+app.post('/api/sales/:id/shipping/book', requireAuth, requireAdmin, async (request, response, next) => {
+  const orderId = Number(request.params.id)
+  if (!Number.isSafeInteger(orderId) || orderId < 1) return response.status(400).json({ message: 'Nomor pesanan tidak valid.' })
+  const settings = getBiteshipBookingSettings()
+  if (!settings) return response.status(503).json({ message: 'Lengkapi konfigurasi asal pengiriman Biteship terlebih dahulu.' })
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const orderResult = await client.query(`
+      SELECT so.*,
+        COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='payment'),0) AS paid_amount,
+        COALESCE((SELECT SUM(sp.amount) FROM sales_payments sp WHERE sp.sales_order_id=so.id AND sp.kind='refund'),0) AS refunded_amount,
+        COALESCE((SELECT SUM((soi.quantity-soi.returned_quantity)*soi.unit_price) FROM sales_order_items soi WHERE soi.sales_order_id=so.id),0) AS subtotal
+      FROM sales_orders so
+      WHERE so.id=$1
+      FOR UPDATE
+    `, [orderId])
+    if (!orderResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(404).json({ message: 'Pesanan tidak ditemukan.' })
+    }
+    const order = orderResult.rows[0]
+    if (order.source !== 'online' || order.fulfillment_method !== 'delivery' || order.shipping_provider !== 'biteship') {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan ini tidak menggunakan pengiriman Biteship.' })
+    }
+    if (order.shipping_order_id) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan ini sudah dibuatkan pengiriman.' })
+    }
+    if (['cancelled', 'returned'].includes(order.status)) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pesanan batal atau retur tidak dapat dikirim.' })
+    }
+    const orderTotal = Math.max(0, calculateSaleTotals(
+      BigInt(Math.round(Number(order.subtotal) * 100)),
+      Number(order.discount_rate || 0),
+      Number(order.tax_rate || 0),
+    ).totalAmount - Number(order.coupon_discount || 0) - Number(order.loyalty_discount || 0)) + Number(order.shipping_fee || 0)
+    if (Number(order.paid_amount) - Number(order.refunded_amount) < orderTotal) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pembayaran pesanan harus lunas sebelum membuat pengiriman.' })
+    }
+    if (!order.destination_postal_code || !order.shipping_courier_code || !order.shipping_service_code) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Data tarif pengiriman pesanan tidak lengkap.' })
+    }
+    const linesResult = await client.query(`
+      SELECT product_name, sku, quantity-returned_quantity AS quantity, unit_price, weight_grams
+      FROM sales_order_items
+      WHERE sales_order_id=$1 AND quantity>returned_quantity
+      ORDER BY id
+    `, [order.id])
+    if (!linesResult.rowCount || linesResult.rows.some((line) => !Number.isSafeInteger(Number(line.weight_grams)) || Number(line.weight_grams) < 1)) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Berat produk pada pesanan tidak tersedia.' })
+    }
+    const payload = {
+      origin_contact_name: settings.originContactName,
+      origin_contact_phone: settings.originContactPhone,
+      origin_address: settings.originAddress,
+      origin_postal_code: Number(settings.originPostalCode),
+      destination_contact_name: order.customer_name,
+      destination_contact_phone: order.customer_phone,
+      destination_address: order.delivery_address,
+      destination_postal_code: Number(order.destination_postal_code),
+      courier_company: order.shipping_courier_code,
+      courier_type: order.shipping_service_code,
+      delivery_type: 'now',
+      order_note: String(order.notes || `Pesanan ${order.order_number}`).slice(0, 500),
+      reference_id: order.order_number,
+      items: linesResult.rows.map((line) => ({
+        name: String(line.product_name).slice(0, 100),
+        description: String(line.sku || line.product_name).slice(0, 200),
+        value: Math.round(Number(line.unit_price)),
+        quantity: Number(line.quantity),
+        weight: Number(line.weight_grams),
+      })),
+    }
+    if (settings.originContactEmail) payload.origin_contact_email = settings.originContactEmail
+    if (settings.organization) payload.shipper_organization = settings.organization
+    if (order.customer_email) payload.destination_contact_email = order.customer_email
+    if (settings.collectionMethod && ['pickup', 'drop_off'].includes(settings.collectionMethod)) {
+      payload.origin_collection_method = settings.collectionMethod
+    }
+    let shipment
+    try {
+      shipment = await createBiteshipOrder({ apiKey: settings.apiKey, payload })
+    } catch (error) {
+      await client.query('ROLLBACK')
+      if (error instanceof BiteshipError) {
+        console.error('Biteship shipment booking failed.', error.code)
+        return response.status(502).json({ message: 'Pengiriman gagal dibuat di Biteship. Periksa konfigurasi dan saldo Biteship.' })
+      }
+      throw error
+    }
+    await client.query(`
+      UPDATE sales_orders
+      SET shipping_order_id=$1, shipping_tracking_id=$2, shipping_waybill_id=$3,
+          shipping_status=$4, updated_at=NOW()
+      WHERE id=$5
+    `, [shipment.orderId, shipment.trackingId, shipment.waybillId, shipment.status, order.id])
+    await client.query('COMMIT')
+    await sendCustomerStorefrontEmail({
+      to: order.customer_email,
+      subject: `Pengiriman pesanan ${order.order_number} dibuat`,
+      title: 'Pengiriman pesanan dibuat',
+      lines: [
+        `Nomor pesanan: ${order.order_number}`,
+        `Kurir: ${order.shipping_courier_name} ${order.shipping_service_name}`,
+        shipment.waybillId ? `Nomor resi: ${shipment.waybillId}` : 'Nomor resi akan tersedia setelah kurir memproses pengiriman.',
+      ],
+    })
+    response.json({
+      orderId: shipment.orderId,
+      trackingId: shipment.trackingId,
+      waybillId: shipment.waybillId,
+      status: shipment.status,
+    })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
+
+app.post('/api/sales/:id/shipping/refresh', requireAuth, async (request, response, next) => {
+  const orderId = Number(request.params.id)
+  if (!Number.isSafeInteger(orderId) || orderId < 1) return response.status(400).json({ message: 'Nomor pesanan tidak valid.' })
+  const settings = getBiteshipSettings()
+  if (!settings) return response.status(503).json({ message: 'Integrasi Biteship belum dikonfigurasi.' })
+  try {
+    const orderResult = await pool.query(
+      'SELECT id, order_number, customer_email, shipping_tracking_id, shipping_status FROM sales_orders WHERE id=$1 AND shipping_provider=$2',
+      [orderId, 'biteship'],
+    )
+    if (!orderResult.rowCount) return response.status(404).json({ message: 'Pengiriman tidak ditemukan.' })
+    const order = orderResult.rows[0]
+    if (!order.shipping_tracking_id) return response.status(409).json({ message: 'Nomor pelacakan Biteship belum tersedia.' })
+    const tracking = await getBiteshipTracking({ apiKey: settings.apiKey, trackingId: order.shipping_tracking_id })
+    const history = tracking.history.slice(0, 50).map((event) => ({
+      status: String(event?.status || '').slice(0, 40),
+      note: String(event?.note || '').slice(0, 500),
+      updatedAt: event?.updated_at || event?.created_at || null,
+    }))
+    const status = tracking.status || order.shipping_status
+    await pool.query(`
+      UPDATE sales_orders
+      SET shipping_status=$1, shipping_waybill_id=COALESCE($2,shipping_waybill_id),
+          shipping_history=$3::jsonb, updated_at=NOW()
+      WHERE id=$4
+    `, [status, tracking.waybillId, JSON.stringify(history), order.id])
+    if (status && status !== order.shipping_status) {
+      await sendCustomerStorefrontEmail({
+        to: order.customer_email,
+        subject: `Pembaruan pengiriman ${order.order_number}`,
+        title: 'Status pengiriman diperbarui',
+        lines: [
+          `Nomor pesanan: ${order.order_number}`,
+          `Status kurir: ${status}`,
+          tracking.waybillId ? `Nomor resi: ${tracking.waybillId}` : '',
+        ].filter(Boolean),
+      })
+    }
+    response.json({
+      status,
+      waybillId: tracking.waybillId || null,
+      history,
+    })
+  } catch (error) {
+    if (error instanceof BiteshipError) {
+      console.error('Biteship tracking refresh failed.', error.code)
+      return response.status(502).json({ message: 'Status pengiriman gagal diperbarui dari Biteship.' })
+    }
+    next(error)
+  }
 })
 
 app.get('/api/receivables', requireAuth, async (_request, response, next) => {
@@ -2292,10 +3678,12 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
     let checkoutSubtotalCents = 0n
     for (const item of normalizedItems.sort((a, b) => a.productId - b.productId)) {
       const productResult = await client.query(
-        `SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches,
+        `SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches, p.weight_grams,
           (SELECT poi.unit_cost FROM purchase_order_items poi JOIN purchase_orders po ON po.id=poi.purchase_order_id
             WHERE poi.product_id=p.id AND poi.received_quantity>0 ORDER BY po.created_at DESC, poi.id DESC LIMIT 1) AS last_unit_cost
-          FROM products p WHERE p.id=$1 AND p.deleted_at IS NULL FOR UPDATE`,
+          FROM products p WHERE p.id=$1 AND p.deleted_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM products child WHERE child.parent_product_id=p.id AND child.deleted_at IS NULL)
+          FOR UPDATE`,
         [item.productId],
       )
       if (!productResult.rowCount) {
@@ -2321,8 +3709,8 @@ app.post('/api/sales', requireAuth, async (request, response, next) => {
       await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, product.id])
       await client.query('UPDATE warehouse_stocks SET stock=$1 WHERE warehouse_id=$2 AND product_id=$3', [warehouseStockAfter, warehouseId, product.id])
       const salesItemResult = await client.query(
-        'INSERT INTO sales_order_items (sales_order_id, product_id, product_name, sku, quantity, unit_price, unit_cost) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-        [order.id, product.id, product.name, product.sku, item.quantity, product.price, Number(product.last_unit_cost || 0)],
+        'INSERT INTO sales_order_items (sales_order_id, product_id, product_name, sku, quantity, unit_price, unit_cost, weight_grams) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+        [order.id, product.id, product.name, product.sku, item.quantity, product.price, Number(product.last_unit_cost || 0), product.weight_grams],
       )
       if (product.track_batches) {
         const batches = await client.query('SELECT id, quantity FROM product_batches WHERE product_id=$1 AND warehouse_id=$2 AND quantity>0 ORDER BY expires_at NULLS LAST, created_at, id FOR UPDATE', [product.id, warehouseId])
@@ -2389,12 +3777,17 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
         return response.status(409).json({ message: 'Buka sesi kas harian sebelum mencatat pembayaran atau refund tunai.' })
       }
     }
-    const orderResult = await client.query('SELECT id, status, discount_rate, tax_rate FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    const orderResult = await client.query('SELECT id, order_number, source, customer_email, status, discount_rate, tax_rate, coupon_discount, loyalty_discount, shipping_fee FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
     if (!orderResult.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Invoice tidak ditemukan.' })
     }
     const order = orderResult.rows[0]
+    const gateway = await client.query('SELECT status FROM payment_gateway_transactions WHERE sales_order_id=$1 FOR UPDATE', [order.id])
+    if (kind === 'payment' && ['pending', 'capture'].includes(gateway.rows[0]?.status)) {
+      await client.query('ROLLBACK')
+      return response.status(409).json({ message: 'Pembayaran Midtrans sedang berjalan; jangan mencatat pembayaran manual untuk invoice ini.' })
+    }
     const amountResult = await client.query(`
       SELECT COALESCE(SUM((quantity-returned_quantity)*unit_price), 0) AS subtotal
       FROM sales_order_items
@@ -2407,11 +3800,11 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
       FROM sales_payments
       WHERE sales_order_id=$1
     `, [order.id])
-    const totalAmount = order.status === 'cancelled' ? 0 : calculateSaleTotals(
+    const totalAmount = order.status === 'cancelled' ? 0 : Math.max(0, calculateSaleTotals(
       BigInt(Math.round(Number(amountResult.rows[0].subtotal) * 100)),
       Number(order.discount_rate),
       Number(order.tax_rate),
-    ).totalAmount
+    ).totalAmount - Number(order.coupon_discount || 0) - Number(order.loyalty_discount || 0)) + Number(order.shipping_fee || 0)
     const paidAmount = Number(paymentResult.rows[0].paid_amount)
     const refundedAmount = Number(paymentResult.rows[0].refunded_amount)
     const netPaid = paidAmount - refundedAmount
@@ -2437,7 +3830,22 @@ app.post('/api/sales/:id/payments', requireAuth, async (request, response, next)
       'INSERT INTO sales_payments (sales_order_id, kind, amount, method, reference, notes, recorded_by, recorded_by_name, cash_session_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
       [order.id, kind, amountValue, method, String(reference).trim() || null, String(notes).trim() || null, request.userId, userResult.rows[0]?.name || null, cashSession?.id || null],
     )
+    if (kind === 'payment' && order.source === 'online' && netPaid + amountValue >= totalAmount) {
+      await awardStorefrontLoyaltyPoints(client, order.id, order.customer_email)
+    }
     await client.query('COMMIT')
+    if (order.source === 'online') {
+      await sendCustomerStorefrontEmail({
+        to: order.customer_email,
+        subject: `${kind === 'payment' ? 'Pembayaran' : 'Refund'} pesanan ${order.order_number}`,
+        title: kind === 'payment' ? 'Pembayaran pesanan dicatat' : 'Pengembalian dana dicatat',
+        lines: [
+          `Nomor pesanan: ${order.order_number}`,
+          `Jumlah: Rp ${amountValue.toLocaleString('id-ID')}`,
+          kind === 'payment' ? 'Pembayaran telah dicatat oleh toko.' : 'Pengembalian dana telah dicatat oleh toko.',
+        ],
+      })
+    }
     response.json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
@@ -2457,7 +3865,7 @@ app.post('/api/sales/:id/return', requireAuth, async (request, response, next) =
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const orderResult = await client.query('SELECT id, order_number, status, warehouse_id FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    const orderResult = await client.query('SELECT id, order_number, status, warehouse_id, source FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
     if (!orderResult.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Pesanan penjualan tidak ditemukan.' })
@@ -2542,12 +3950,19 @@ app.post('/api/sales/:id/cancel', requireAuth, async (request, response, next) =
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const orderResult = await client.query('SELECT id, order_number, status, warehouse_id FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
+    const orderResult = await client.query('SELECT id, order_number, status, source, customer_email, warehouse_id FROM sales_orders WHERE id=$1 FOR UPDATE', [request.params.id])
     if (!orderResult.rowCount) {
       await client.query('ROLLBACK')
       return response.status(404).json({ message: 'Pesanan penjualan tidak ditemukan.' })
     }
     const order = orderResult.rows[0]
+    if (order.source === 'online') {
+      const gateway = await client.query('SELECT status FROM payment_gateway_transactions WHERE sales_order_id=$1 FOR UPDATE', [order.id])
+      if (['pending', 'capture'].includes(gateway.rows[0]?.status)) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Pesanan dengan pembayaran Midtrans yang masih berjalan tidak dapat dibatalkan.' })
+      }
+    }
     if (order.status === 'cancelled') {
       await client.query('ROLLBACK')
       return response.status(409).json({ message: 'Pesanan ini sudah dibatalkan.' })
@@ -2601,6 +4016,7 @@ app.post('/api/sales/:id/cancel', requireAuth, async (request, response, next) =
         [line.product_id, order.warehouse_id, request.userId, userResult.rows[0]?.name ?? null, quantity, warehouseStock, warehouseStockAfter, `Cancel ${order.order_number}`],
       )
     }
+    if (order.source === 'online') await restoreStorefrontLoyaltyPoints(client, order.id, order.customer_email)
     await client.query("UPDATE sales_orders SET status='cancelled', updated_at=NOW() WHERE id=$1", [order.id])
     await client.query('COMMIT')
     response.json((await readSalesOrders('WHERE so.id=$1', [order.id]))[0])

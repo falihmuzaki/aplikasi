@@ -8,6 +8,8 @@ const validOrder = {
   customerPhone: '+62 812-3456-7890',
   fulfillmentMethod: 'delivery',
   deliveryAddress: 'Jalan Melati 10',
+  destinationPostalCode: '40111',
+  shippingOption: { courierCode: 'jne', serviceCode: 'reg', price: 12000 },
   notes: '  Tolong hubungi sebelum dikirim. ',
   items: [{ productId: '4', quantity: '2' }],
 }
@@ -20,6 +22,8 @@ test('normalizes guest checkout details and delivery address', () => {
       customerPhone: '+62 812-3456-7890',
       fulfillmentMethod: 'delivery',
       deliveryAddress: 'Jalan Melati 10',
+      destinationPostalCode: '40111',
+      shippingOption: { courierCode: 'jne', serviceCode: 'reg', price: 12000 },
       notes: 'Tolong hubungi sebelum dikirim.',
       items: [{ productId: 4, quantity: 2 }],
     },
@@ -47,4 +51,11 @@ test('rejects duplicate products and malformed contact details', () => {
 test('clears delivery address for pickup orders', () => {
   const { data } = validateStorefrontOrder({ ...validOrder, fulfillmentMethod: 'pickup', deliveryAddress: '' })
   assert.equal(data.deliveryAddress, null)
+  assert.equal(data.destinationPostalCode, null)
+  assert.equal(data.shippingOption, null)
+})
+
+test('rejects invalid destination postal codes and altered shipping rates', () => {
+  assert.deepEqual(validateStorefrontOrder({ ...validOrder, destinationPostalCode: '4011' }), { error: 'Kode pos harus terdiri dari 5 angka.' })
+  assert.deepEqual(validateStorefrontOrder({ ...validOrder, shippingOption: { courierCode: 'jne', serviceCode: 'reg', price: 12000.5 } }), { error: 'Pilihan layanan pengiriman tidak valid.' })
 })

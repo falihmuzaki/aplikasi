@@ -21,9 +21,15 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 5 CHECK (low_stock_threshold >= 0);
 ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode VARCHAR(120);
 ALTER TABLE products ADD COLUMN IF NOT EXISTS track_batches BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS weight_grams INTEGER CHECK (weight_grams IS NULL OR weight_grams > 0);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS parent_product_id BIGINT REFERENCES products(id) ON DELETE RESTRICT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS variant_label VARCHAR(120);
 CREATE UNIQUE INDEX IF NOT EXISTS products_sku_idx ON products(sku) WHERE sku IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS products_barcode_idx ON products(barcode) WHERE barcode IS NOT NULL;
 CREATE INDEX IF NOT EXISTS products_deleted_at_idx ON products(deleted_at);
+CREATE INDEX IF NOT EXISTS products_parent_product_idx ON products(parent_product_id, deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS products_variant_label_idx ON products(parent_product_id, lower(variant_label))
+  WHERE parent_product_id IS NOT NULL AND deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS stock_movements (
   id BIGSERIAL PRIMARY KEY,
@@ -151,6 +157,20 @@ CREATE TABLE IF NOT EXISTS customers (
 
 CREATE INDEX IF NOT EXISTS customers_name_idx ON customers(name);
 
+CREATE TABLE IF NOT EXISTS storefront_customer_accounts (
+  id BIGSERIAL PRIMARY KEY,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  otp_hash TEXT,
+  otp_expires_at TIMESTAMPTZ,
+  otp_attempts INTEGER NOT NULL DEFAULT 0 CHECK (otp_attempts >= 0),
+  session_token_hash VARCHAR(64),
+  session_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS storefront_customer_accounts_session_idx
+  ON storefront_customer_accounts(session_token_hash) WHERE session_token_hash IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS sales_orders (
   id BIGSERIAL PRIMARY KEY,
   order_number VARCHAR(32) UNIQUE,
@@ -169,14 +189,50 @@ CREATE TABLE IF NOT EXISTS sales_orders (
 
 CREATE INDEX IF NOT EXISTS sales_orders_created_at_idx ON sales_orders(created_at DESC);
 CREATE INDEX IF NOT EXISTS sales_orders_customer_idx ON sales_orders(customer_id);
+CREATE TABLE IF NOT EXISTS payment_gateway_transactions (
+  id BIGSERIAL PRIMARY KEY,
+  sales_order_id BIGINT NOT NULL UNIQUE REFERENCES sales_orders(id) ON DELETE CASCADE,
+  provider VARCHAR(24) NOT NULL CHECK (provider IN ('midtrans')),
+  order_id VARCHAR(50) NOT NULL UNIQUE,
+  provider_transaction_id VARCHAR(120) UNIQUE,
+  status VARCHAR(32) NOT NULL,
+  fraud_status VARCHAR(24),
+  payment_type VARCHAR(32),
+  gross_amount NUMERIC(12,2) NOT NULL CHECK (gross_amount > 0),
+  expires_at TIMESTAMPTZ,
+  paid_at TIMESTAMPTZ,
+  last_notification_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS payment_gateway_transactions_status_idx ON payment_gateway_transactions(provider, status, updated_at DESC);
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS discount_rate NUMERIC(5, 2) NOT NULL DEFAULT 0 CHECK (discount_rate >= 0 AND discount_rate <= 100);
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS tax_rate NUMERIC(5, 2) NOT NULL DEFAULT 0 CHECK (tax_rate >= 0 AND tax_rate <= 100);
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'internal' CHECK (source IN ('internal', 'online'));
+CREATE INDEX IF NOT EXISTS sales_orders_online_email_idx ON sales_orders(lower(customer_email), created_at DESC)
+  WHERE source='online' AND customer_email IS NOT NULL;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS coupon_id BIGINT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(40);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS coupon_discount NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (coupon_discount >= 0);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS loyalty_points_redeemed INTEGER NOT NULL DEFAULT 0 CHECK (loyalty_points_redeemed >= 0);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS loyalty_discount NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (loyalty_discount >= 0);
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS fulfillment_method VARCHAR(16) NOT NULL DEFAULT 'pickup' CHECK (fulfillment_method IN ('pickup', 'delivery'));
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS fulfillment_status VARCHAR(24)
   CHECK (fulfillment_status IN ('pending', 'processing', 'ready_for_pickup', 'shipped', 'completed'));
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS tracking_token_hash VARCHAR(64);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_fee NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (shipping_fee >= 0);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS destination_postal_code VARCHAR(10);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_provider VARCHAR(24);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_courier_code VARCHAR(64);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_courier_name VARCHAR(120);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_service_code VARCHAR(64);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_service_name VARCHAR(120);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_order_id VARCHAR(120);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_tracking_id VARCHAR(120);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_waybill_id VARCHAR(120);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_status VARCHAR(40);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS shipping_history JSONB NOT NULL DEFAULT '[]'::jsonb;
 UPDATE sales_orders SET fulfillment_status='pending' WHERE source='online' AND fulfillment_status IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS sales_orders_tracking_token_hash_idx
   ON sales_orders(tracking_token_hash) WHERE tracking_token_hash IS NOT NULL;
@@ -196,6 +252,7 @@ CREATE TABLE IF NOT EXISTS sales_order_items (
 
 CREATE INDEX IF NOT EXISTS sales_order_items_order_idx ON sales_order_items(sales_order_id);
 ALTER TABLE sales_order_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (unit_cost >= 0);
+ALTER TABLE sales_order_items ADD COLUMN IF NOT EXISTS weight_grams INTEGER CHECK (weight_grams IS NULL OR weight_grams > 0);
 
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(32);
 UPDATE sales_orders SET invoice_number = 'INV-' || SUBSTRING(order_number FROM 4) WHERE invoice_number IS NULL;
@@ -215,6 +272,48 @@ CREATE TABLE IF NOT EXISTS sales_payments (
 );
 
 CREATE INDEX IF NOT EXISTS sales_payments_order_idx ON sales_payments(sales_order_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS storefront_coupons (
+  id BIGSERIAL PRIMARY KEY,
+  code VARCHAR(40) NOT NULL UNIQUE,
+  discount_type VARCHAR(16) NOT NULL CHECK (discount_type IN ('percent', 'fixed')),
+  discount_value NUMERIC(12,2) NOT NULL CHECK (discount_value > 0),
+  minimum_order_amount NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (minimum_order_amount >= 0),
+  usage_limit INTEGER CHECK (usage_limit IS NULL OR usage_limit > 0),
+  usage_count INTEGER NOT NULL DEFAULT 0 CHECK (usage_count >= 0),
+  starts_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sales_orders_coupon_id_fkey') THEN
+    ALTER TABLE sales_orders ADD CONSTRAINT sales_orders_coupon_id_fkey
+      FOREIGN KEY (coupon_id) REFERENCES storefront_coupons(id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS storefront_coupon_redemptions (
+  id BIGSERIAL PRIMARY KEY,
+  coupon_id BIGINT NOT NULL REFERENCES storefront_coupons(id) ON DELETE RESTRICT,
+  sales_order_id BIGINT NOT NULL UNIQUE REFERENCES sales_orders(id) ON DELETE CASCADE,
+  redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS storefront_coupon_redemptions_coupon_idx
+  ON storefront_coupon_redemptions(coupon_id, redeemed_at DESC);
+
+CREATE TABLE IF NOT EXISTS storefront_loyalty_ledger (
+  id BIGSERIAL PRIMARY KEY,
+  customer_email VARCHAR(255) NOT NULL,
+  sales_order_id BIGINT NOT NULL REFERENCES sales_orders(id) ON DELETE RESTRICT,
+  entry_type VARCHAR(16) NOT NULL CHECK (entry_type IN ('earned', 'redeemed', 'restored', 'reversed')),
+  points INTEGER NOT NULL CHECK (points <> 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (sales_order_id, entry_type)
+);
+CREATE INDEX IF NOT EXISTS storefront_loyalty_email_idx
+  ON storefront_loyalty_ledger(lower(customer_email), created_at DESC);
 
 CREATE TABLE IF NOT EXISTS warehouses (
   id BIGSERIAL PRIMARY KEY,
@@ -380,3 +479,29 @@ CREATE INDEX IF NOT EXISTS cash_sessions_opened_at_idx ON cash_sessions(opened_a
 ALTER TABLE sales_payments ADD COLUMN IF NOT EXISTS cash_session_id BIGINT REFERENCES cash_sessions(id) ON DELETE SET NULL;
 ALTER TABLE operating_expenses ADD COLUMN IF NOT EXISTS cash_session_id BIGINT REFERENCES cash_sessions(id) ON DELETE SET NULL;
 ALTER TABLE cash_sessions ADD COLUMN IF NOT EXISTS difference_amount NUMERIC(12,2);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGSERIAL PRIMARY KEY,
+  actor_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  actor_type VARCHAR(16) NOT NULL CHECK (actor_type IN ('user', 'customer', 'system', 'anonymous')),
+  action VARCHAR(16) NOT NULL,
+  resource_type VARCHAR(64) NOT NULL,
+  resource_id VARCHAR(120),
+  request_method VARCHAR(10) NOT NULL,
+  request_path VARCHAR(255) NOT NULL,
+  response_status INTEGER NOT NULL CHECK (response_status BETWEEN 200 AND 299),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON audit_logs(actor_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS scheduled_backup_runs (
+  backup_date DATE PRIMARY KEY,
+  object_key VARCHAR(500) NOT NULL,
+  status VARCHAR(16) NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  size_bytes BIGINT,
+  error_code VARCHAR(100),
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
