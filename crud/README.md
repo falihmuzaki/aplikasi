@@ -80,6 +80,7 @@ Toolbar **Fitur lainnya** di bagian bawah aplikasi menyediakan fitur gudang, sto
 
 - **Gudang**: stok lama dimigrasikan ke Gudang Utama. Gudang tambahan memiliki saldo produk masing-masing; transfer mengurangi dan menambah gudang terkait tanpa mengubah stok total. Pilih gudang transaksi pada toolbar sebelum membuat pembelian atau penjualan.
 - **Stok opname**: catat hitung fisik per gudang. Sistem menyimpan snapshot; jika stok berubah sebelum penyelesaian, opname ditolak agar pergerakan baru tidak tertimpa. Selisih yang diterapkan masuk ke stock log.
+- **Log stok**: admin dapat mencari hingga 200 pergerakan terbaru berdasarkan produk, gudang, pengguna, atau alasan; hasil dapat disaring menurut stok masuk/keluar dan tanggal, lalu diekspor ke CSV.
 - **Utang pemasok dan retur**: pesanan pembelian memiliki tanggal jatuh tempo (default 30 hari). Pembayaran dapat sebagian atau lunas. Retur dibatasi pada jumlah yang diterima dan masih tersedia, mengurangi stok serta saldo utang terkait.
 - **Laporan**: ringkasan penjualan bersih setelah diskon (sebelum pajak), diskon, pajak, pembayaran/refund, pembelian, produk terlaris, dan margin kotor setelah diskon berdasarkan harga beli yang tersimpan pada baris penjualan. Pajak ditampilkan terpisah dan tidak dianggap pendapatan/laba. Margin transaksi lama yang tidak memiliki data biaya tidak dapat dihitung. Laporan dapat diekspor ke CSV atau dicetak/disimpan ke PDF.
 - **Piutang**: daftar saldo invoice belum lunas beserta umur tagihannya.
