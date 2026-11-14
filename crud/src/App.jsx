@@ -499,10 +499,10 @@ function App() {
   const maxCategoryStock = Math.max(1, ...dashboardCategories.map((item) => item.stockUnits))
   const inventoryHealthyCount = Math.max(0, dashboardStats.totalProducts - dashboardStats.outOfStockCount - dashboardStats.lowStockCount)
   const priorityProducts = [...lowOrOut].sort((a, b) => (a.stock - b.stock) || a.name.localeCompare(b.name)).slice(0, 5)
-  const openDashboardProducts = (status = 'All status') => {
+  const openDashboardProducts = (status = 'All status', categoryFilter = 'All categories') => {
     setQuery('')
     setFilter(status)
-    setCategory('All categories')
+    setCategory(categoryFilter)
     setPriceMin('')
     setPriceMax('')
     setFiltersOpen(false)
@@ -990,11 +990,11 @@ function App() {
       </div>
       <div className="category-breakdown">
         <div className="dashboard-subheading"><div><h3>Stok per kategori</h3><p className="muted">{dashboardCategories.length} kategori</p></div><button className="text-action" onClick={() => setActiveView('categories')}>Lihat kategori</button></div>
-        {dashboardCategories.length ? dashboardCategories.map((row, index) => <div className="category-row" key={row.category}>
+        {dashboardCategories.length ? dashboardCategories.map((row, index) => <button type="button" className="category-row dashboard-category-button" key={row.category} onClick={() => openDashboardProducts('All status', row.category)} aria-label={`Lihat produk kategori ${row.category}`}>
           <div className="category-row-heading"><strong>{row.category}</strong><span>{row.stockUnits} unit · {row.productCount} produk</span></div>
           <div className="category-track"><span className={`category-fill category-color-${index % 4}`} style={{ width: `${row.stockUnits ? Math.max(4, row.stockUnits / maxCategoryStock * 100) : 0}%` }} /></div>
           <small>{formatIDR(row.value)}</small>
-        </div>) : <p className="empty-state">Belum ada data kategori.</p>}
+        </button>) : <p className="empty-state">Belum ada data kategori.</p>}
       </div>
     </div>
   </section>
