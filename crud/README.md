@@ -39,6 +39,18 @@ Buka http://localhost:5173 dan login dengan akun demo:
 
 Jika PostgreSQL belum aktif, dashboard tetap berjalan dalam local mode. Jika API aktif, operasi tambah, edit, hapus, dan pemuatan data menggunakan PostgreSQL.
 
+## Deploy ke Vercel dengan PostgreSQL Neon
+
+1. Import repository GitHub ke Vercel dan pilih root directory `crud`.
+2. Gunakan preset Vite, install command `npm ci`, build command `npm run build`, dan output directory `dist`.
+3. Tambahkan environment variables pada proyek Vercel:
+   - `DATABASE_URL`: connection string PostgreSQL Neon. Jangan gunakan prefix `VITE_`.
+   - `AUTH_TOKEN_SECRET`: secret acak yang panjang.
+4. Deploy. Frontend memakai `/api` pada domain yang sama; endpoint Express tersedia melalui `api/[...path].js`. Skema database dibuat saat API pertama kali dipanggil.
+5. Setelah skema dibuat, jalankan `npm run db:admin` satu kali dengan `DATABASE_URL`, `ADMIN_EMAIL`, dan `ADMIN_PASSWORD` tersedia di environment lokal untuk membuat akun admin. Jangan commit nilai rahasia atau file `.env`.
+
+Untuk API lokal, frontend tetap memakai `http://localhost:3001/api`. Jika API di-host pada domain terpisah, atur `VITE_API_URL` ke URL API lengkap, termasuk `/api`.
+
 ## Pemasok dan pesanan pembelian
 
 Menu **Suppliers** menyimpan nama pemasok dan informasi kontak; admin dapat menambah, mengubah, dan menghapus pemasok. Pemasok yang sudah dipakai di pesanan pembelian tidak dapat dihapus.

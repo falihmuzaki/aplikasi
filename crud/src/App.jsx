@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Activity, Archive, ArrowDownUp, ArrowRight, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, Eye, EyeOff, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { code128BarcodeSvg } from './barcode'
 import { BackupView, BatchesView, BarcodeView, CashSessionView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
+import { API_URL } from './api-url'
 import './App.css'
 
 const seedProducts = [
@@ -15,7 +16,6 @@ const defaultCategories = ['Electronics', 'Home & Living', 'Accessories', 'Fashi
 const blankForm = { name: '', category: 'Electronics', price: '', stock: '', status: 'Active', media: null, sku: '', barcode: '', trackBatches: false, lowStockThreshold: 5 }
 const LOW_STOCK_THRESHOLD = 5
 const blankUser = { name: '', email: '', password: '', role: 'staff', isActive: true, mfaEnabled: false }
-const API_URL = 'http://localhost:3001/api'
 const getProductStatus = (product) => {
   const threshold = product.lowStockThreshold ?? LOW_STOCK_THRESHOLD
   return product.stock <= 0 ? 'Out of stock' : product.stock <= threshold ? 'Low stock' : 'Active'

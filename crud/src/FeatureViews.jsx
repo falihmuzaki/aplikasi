@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CirclePlus, Printer, RefreshCw, Save, Truck, Upload, X } from 'lucide-react'
-
-const API_URL = 'http://localhost:3001/api'
+import { API_URL } from './api-url'
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0)
 
