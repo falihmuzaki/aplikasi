@@ -41,13 +41,15 @@ Jika PostgreSQL belum aktif, dashboard tetap berjalan dalam local mode. Jika API
 
 ## Deploy ke Vercel dengan PostgreSQL Neon
 
-1. Import repository GitHub ke Vercel dan pilih root directory `crud`.
-2. Gunakan preset Vite, install command `npm ci`, build command `npm run build`, dan output directory `dist`.
-3. Tambahkan environment variables pada proyek Vercel:
+Deploy frontend dan API sebagai dua proyek Vercel dari repository yang sama, dengan root directory `crud`.
+
+1. Proyek frontend: pilih preset Vite, install command `npm ci`, build command `npm run build`, dan output directory `dist`.
+2. Proyek API: pilih preset Express. Entry point `index.js` meneruskan request ke API Express.
+3. Pada proyek API, tambahkan environment variables:
    - `DATABASE_URL`: connection string PostgreSQL Neon. Jangan gunakan prefix `VITE_`.
    - `AUTH_TOKEN_SECRET`: secret acak yang panjang.
-4. Deploy. Frontend memakai `/api` pada domain yang sama; endpoint Express tersedia melalui `api/[...path].js`. Skema database dibuat saat API pertama kali dipanggil.
-5. Setelah skema dibuat, jalankan `npm run db:admin` satu kali dengan `DATABASE_URL`, `ADMIN_EMAIL`, dan `ADMIN_PASSWORD` tersedia di environment lokal untuk membuat akun admin. Jangan commit nilai rahasia atau file `.env`.
+4. Deploy proyek API, lalu atur `VITE_API_URL` pada proyek frontend ke URL API lengkap, termasuk `/api`, misalnya `https://if-store-api.vercel.app/api`. Deploy ulang frontend setelah mengubah variable ini.
+5. Skema database dibuat saat API pertama kali dipanggil. Setelah itu, jalankan `npm run db:admin` satu kali dengan `DATABASE_URL`, `ADMIN_EMAIL`, dan `ADMIN_PASSWORD` tersedia di environment lokal untuk membuat akun admin. Jangan commit nilai rahasia atau file `.env`.
 
 Untuk API lokal, frontend tetap memakai `http://localhost:3001/api`. Jika API di-host pada domain terpisah, atur `VITE_API_URL` ke URL API lengkap, termasuk `/api`.
 
