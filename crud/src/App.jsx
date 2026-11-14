@@ -325,6 +325,7 @@ function App() {
   const isAdmin = currentUser?.role === 'admin'
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [loginError, setLoginError] = useState('')
+  const [loginNotice, setLoginNotice] = useState('')
   const [otpStep, setOtpStep] = useState(false)
   const [otp, setOtp] = useState('')
   const [resetStep, setResetStep] = useState(false)
@@ -544,6 +545,7 @@ function App() {
   }
   const handleLogin = async (event) => {
     event.preventDefault()
+    setLoginNotice('')
     try {
       const response = await fetch(`${API_URL}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(loginForm) })
       if (!response.ok) { const error = await response.json(); throw new Error(error.message) }
@@ -606,7 +608,12 @@ function App() {
     const result = await response.json()
     setLoginError(response.ok ? result.message : result.message || 'OTP gagal dikirim ulang.')
   }
-  const handleLogout = () => { localStorage.removeItem('lumina-auth'); localStorage.removeItem('lumina-user'); localStorage.removeItem('lumina-token'); setCurrentUser(null); setIsAuthenticated(false); setCashSession(null); setLoginForm({ email: '', password: '' }); setOtp(''); setOtpStep(false); setRegisterStep(false); setRegisterForm({ name: '', email: '', password: '', passwordConfirmation: '' }); setRegisterOtp('') }
+  const handleLogout = (options = {}) => {
+    const notice = options.notice || ''
+    localStorage.removeItem('lumina-auth'); localStorage.removeItem('lumina-user'); localStorage.removeItem('lumina-token')
+    setCurrentUser(null); setIsAuthenticated(false); setCashSession(null); setLoginForm({ email: notice ? currentUser?.email || '' : '', password: '' }); setLoginNotice(notice); setOtp(''); setOtpStep(false); setRegisterStep(false); setRegisterForm({ name: '', email: '', password: '', passwordConfirmation: '' }); setRegisterOtp('')
+    if (notice) setActiveView('dashboard')
+  }
   const openCreateModal = () => { setEditingId(null); setForm(blankForm); setMovements([]); setIsModalOpen(true) }
   const openEditModal = (product) => { setEditingId(product.id); setForm({ ...product, price: String(product.price), stock: String(product.stock), sku: product.sku || '', lowStockThreshold: product.lowStockThreshold ?? 5 }); setMovements([]); setIsModalOpen(true); fetch(`${API_URL}/products/${product.id}/movements`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : []).then((data) => setMovements(Array.isArray(data) ? data : [])).catch(() => setMovements([])) }
   const buildProductsCsv = (list) => { const esc = (value) => `"${String(value).replace(/"/g, '""')}"`; const rows = [['Name', 'Category', 'Price', 'Stock', 'Status', 'SKU', 'Low Stock Threshold', 'Created At', 'Updated At'], ...list.map((product) => [product.name, product.category, product.price, product.stock, product.status, product.sku || '', product.lowStockThreshold ?? '', product.createdAt ?? '', product.updatedAt ?? ''])]; return rows.map((row) => row.map(esc).join(',')).join('\n') }
@@ -746,7 +753,7 @@ function App() {
       const response = await fetch(`${API_URL}/auth/password/change`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const result = await response.json()
       if (!response.ok) throw new Error(result.message)
-      pushToast('success', result.message || 'Password berhasil diperbarui.')
+      handleLogout({ notice: result.message || 'Password berhasil diperbarui. Silakan masuk kembali dengan password baru.' })
       return true
     } catch (error) { pushToast('error', error.message || 'Password gagal diperbarui.'); return false }
   }
@@ -910,6 +917,7 @@ function App() {
         <p className="eyebrow">{registerStep === 'form' ? 'Create account' : registerStep === 'otp' ? 'Email verification' : resetStep ? 'Password reset' : otpStep ? 'MFA verification' : 'Welcome back'}</p>
         <h1>{registerStep === 'form' ? 'Daftar akun baru' : registerStep === 'otp' ? 'Enter your OTP code' : resetStep ? 'Create a new password' : otpStep ? 'Enter your OTP code' : 'Sign in to your workspace'}</h1>
         <p className="login-subtitle">{registerStep === 'form' ? 'Buat akun staff untuk mengelola produk dan inventaris.' : registerStep === 'otp' ? `A 6-digit code was sent to ${registerForm.email}.` : resetStep ? `Enter the reset code sent to ${loginForm.email}.` : otpStep ? `A 6-digit code was sent to ${loginForm.email}.` : 'Manage your products and inventory in one calm place.'}</p>
+        {loginNotice && <p className="login-notice" role="status">{loginNotice}</p>}
         {registerStep === 'form' && <label>Name<input autoFocus required type="text" value={registerForm.name} onChange={(event) => setRegisterForm({ ...registerForm, name: event.target.value })} placeholder="Your full name" /></label>}
         {registerStep === 'form'
           ? <label>Email address<input required type="email" value={registerForm.email} onChange={(event) => setRegisterForm({ ...registerForm, email: event.target.value })} placeholder="you@company.com" /></label>

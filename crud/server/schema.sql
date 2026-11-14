@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role VARCHAR(30) NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'staff')),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  auth_version INTEGER NOT NULL DEFAULT 0 CHECK (auth_version >= 0),
   mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   avatar_url TEXT,
   login_otp_hash TEXT,
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0 CHECK (auth_version >= 0);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMPTZ;

@@ -315,6 +315,7 @@ tbody tr:hover { background: #f8fbfa; }
 .login-card h1 { color: #17363a; }
 .login-card input { border-radius: 9px; }
 .login-card input:focus { border-color: #64ad9e; box-shadow: 0 0 0 3px rgba(55, 160, 139, .12); }
+.login-notice { margin: -4px 0 13px; color: var(--green, #208569); font-size: 11px; }
 .password-input-wrap { position: relative; display: block; }
 .login-card .password-input-wrap input { padding-right: 44px; }
 .password-toggle { position: absolute; top: 50%; right: 6px; display: grid; place-items: center; width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 6px; color: var(--muted); background: transparent; transform: translateY(-50%); }

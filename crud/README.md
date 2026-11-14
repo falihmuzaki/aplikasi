@@ -73,7 +73,7 @@ Toolbar **Fitur lainnya** di bagian bawah aplikasi menyediakan fitur gudang, sto
 - **Barcode/QR**: barcode dapat disimpan pada produk dan dicari dengan scanner USB yang berperilaku seperti keyboard atau dengan mengetik kode. SKU juga dapat dipakai untuk pencarian.
 - **Batch/serial/kedaluwarsa**: aktifkan pada produk tertentu. Barang masuk meminta batch; penjualan mengambil batch yang kedaluwarsanya paling dekat dahulu, dan retur mengembalikan alokasi batch asal. Alert menampilkan batch dengan stok tersisa yang sudah kedaluwarsa atau akan kedaluwarsa dalam 30 hari, termasuk produk, gudang, dan jumlah.
 - **Biaya operasional & estimasi laba**: admin mencatat pengeluaran per kategori, metode pembayaran, dan referensi. Laporan periode menampilkan total biaya serta estimasi laba operasional (margin kotor dikurangi biaya yang dicatat); angka ini belum mencakup pajak atau biaya yang belum dimasukkan.
-- **Backup & pemulihan**: admin dapat mengunduh seluruh data aplikasi sebagai JSON atau memulihkannya dari file. Pemulihan mengganti seluruh data aktif dan meminta admin masuk kembali. File berisi data usaha serta hash kata sandi; simpan dengan akses terbatas. OTP sementara tidak dimasukkan ke backup.
+- **Backup & pemulihan**: admin dapat mengunduh seluruh data aplikasi sebagai JSON atau memulihkannya dari file. Pemulihan mengganti seluruh data aktif dan mencabut sesi login yang ada, sehingga pengguna harus masuk kembali. File berisi data usaha serta hash kata sandi; simpan dengan akses terbatas. OTP sementara tidak dimasukkan ke backup.
 - **POS cepat**: dari menu Sales, tombol POS cepat menerima input barcode/SKU, membangun keranjang, mendukung pelanggan umum, lalu membuat invoice dan mencatat pembayaran tunai saat checkout.
 - **Kas harian**: kasir membuka satu sesi dengan saldo awal, lalu sistem mengaitkan pembayaran/refund tunai dan pengeluaran tunai ke sesi yang aktif. Saat penutupan, sistem membandingkan saldo fisik dengan saldo yang diharapkan serta menyimpan selisih. Pembayaran atau pengeluaran tunai memerlukan sesi terbuka; transaksi non-tunai tetap dapat dicatat tanpa sesi. Sesi hanya dapat ditutup oleh kasir yang membukanya.
 
@@ -93,6 +93,7 @@ Alur auth bawaan:
 - **Login** (`POST /api/auth/login`): jika akun tidak mengaktifkan MFA, server langsung mengembalikan `user` dan `token`. Jika MFA aktif, server membuat kode OTP 6 digit (berlaku 10 menit) dan mengembalikan `requiresOtp` tanpa token.
 - **Verifikasi OTP** (`POST /api/auth/otp/verify`) dan **kirim ulang OTP** (`POST /api/auth/otp/resend`): untuk menyelesaikan login MFA.
 - **Lupa password** (`POST /api/auth/password/forgot`) dan **reset password** (`POST /api/auth/password/reset`): memakai kode OTP reset terpisah (berlaku 10 menit) untuk mengganti password.
+- **Pencabutan sesi**: setiap token membawa versi autentikasi pengguna. Ganti/reset password, perubahan status akun, atau pemulihan backup menaikkan versi tersebut sehingga token lama langsung ditolak pada permintaan API berikutnya. Setelah mengganti password sendiri, pengguna diminta masuk kembali dengan password baru.
 
 MFA per user bisa dinyalakan lewat opsi **Enable email OTP MFA** di form Add/Edit user.
 
@@ -116,7 +117,7 @@ Model privilege bawaan berbasis kolom `role` pada tabel `users` (`admin` atau `s
 
 Penegakan di dua lapis:
 
-- **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`. `requireAuth` juga memeriksa status akun aktif pada setiap permintaan API, sehingga token milik user yang dinonaktifkan langsung ditolak.
+- **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat ID, versi sesi, dan waktu kedaluwarsa) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`. `requireAuth` memeriksa status aktif dan versi sesi pada setiap permintaan API, sehingga token akun nonaktif atau sesi yang sudah dicabut langsung ditolak.
 - **Frontend**: menu dan tampilan **Users** disembunyikan untuk staff, dan aplikasi tidak memanggil `GET /api/users` untuk staff. Staff diarahkan ke tampilan products secara default.
 
 Admin dan staff sama-sama dapat melihat/mengelola informasi produk serta menjalankan alur purchase orders dan sales orders. Staf tidak dapat menetapkan stok awal atau mengubah stok langsung di formulir produk/impor; perubahan stok dari transaksi pembelian/penjualan tetap mengikuti alur transaksi normal. Transfer antar gudang, stok opname yang menerapkan selisih, pembuatan gudang, dan penghapusan permanen produk hanya dapat dilakukan admin. Staf tetap dapat melihat daftar gudang, stok per gudang, dan riwayat stok opname.
