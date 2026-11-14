@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
   avatar_url TEXT,
   login_otp_hash TEXT,
   login_otp_expires_at TIMESTAMPTZ,
+  last_login_at TIMESTAMPTZ,
   reset_otp_hash TEXT,
   reset_otp_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -62,6 +63,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_otp_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS register_otp_hash TEXT;

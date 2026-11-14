@@ -107,6 +107,7 @@ Alur auth bawaan:
 - **Login** (`POST /api/auth/login`): jika akun tidak mengaktifkan MFA, server langsung mengembalikan `user` dan `token`. Jika MFA aktif, server membuat kode OTP 6 digit (berlaku 10 menit) dan mengembalikan `requiresOtp` tanpa token.
 - **Verifikasi OTP** (`POST /api/auth/otp/verify`) dan **kirim ulang OTP** (`POST /api/auth/otp/resend`): untuk menyelesaikan login MFA.
 - **Lupa password** (`POST /api/auth/password/forgot`) dan **reset password** (`POST /api/auth/password/reset`): memakai kode OTP reset terpisah (berlaku 10 menit) untuk mengganti password.
+- **Informasi akun**: halaman Users menampilkan tanggal pembuatan akun dan waktu login terakhir. Login MFA dan verifikasi pendaftaran dicatat setelah OTP berhasil diverifikasi; akun yang belum login menampilkan “Belum pernah”.
 - **Pencabutan sesi**: setiap token membawa versi autentikasi pengguna. Ganti/reset password, perubahan status akun, atau pemulihan backup menaikkan versi tersebut sehingga token lama langsung ditolak pada permintaan API berikutnya. Setelah mengganti password sendiri, pengguna diminta masuk kembali dengan password baru.
 
 MFA per user bisa dinyalakan lewat opsi **Enable email OTP MFA** di form Add/Edit user.

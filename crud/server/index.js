@@ -181,7 +181,7 @@ app.post('/api/product-batches', requireAuth, async (request, response, next) =>
 })
 
 const productFields = 'id, name, category, price, stock, status, media_name, media_type, media_url, low_stock_threshold, sku, barcode, track_batches, deleted_at, created_at, updated_at'
-const userFields = 'id, name, email, role, is_active, mfa_enabled, avatar_url, created_at, updated_at'
+const userFields = 'id, name, email, role, is_active, mfa_enabled, avatar_url, last_login_at, created_at, updated_at'
 const categoryFields = 'id, name, created_at, updated_at'
 
 function normalizeCategory(row) {
@@ -369,7 +369,7 @@ function verifyPassword(password, storedHash) {
 }
 
 function normalizeUser(row) {
-  return { id: Number(row.id), name: row.name, email: row.email, role: row.role, isActive: row.is_active, mfaEnabled: row.mfa_enabled, avatarUrl: row.avatar_url || null, createdAt: row.created_at, updatedAt: row.updated_at }
+  return { id: Number(row.id), name: row.name, email: row.email, role: row.role, isActive: row.is_active, mfaEnabled: row.mfa_enabled, avatarUrl: row.avatar_url || null, lastLoginAt: row.last_login_at, createdAt: row.created_at, updatedAt: row.updated_at }
 }
 
 function signToken(uid, version = 0) {
@@ -548,7 +548,8 @@ app.post('/api/auth/login', loginLimiter, async (request, response, next) => {
       await sendOtpEmail({ to: user.email, code, purpose: 'login' })
       return response.json({ requiresOtp: true })
     }
-    response.json({ user: normalizeUser(user), token: signToken(user.id, user.auth_version) })
+    const loggedIn = await pool.query(`UPDATE users SET last_login_at=NOW() WHERE id=$1 RETURNING ${userFields}, auth_version`, [user.id])
+    response.json({ user: normalizeUser(loggedIn.rows[0]), token: signToken(user.id, loggedIn.rows[0].auth_version) })
   } catch (error) { next(error) }
 })
 
@@ -562,8 +563,8 @@ app.post('/api/auth/otp/verify', loginLimiter, async (request, response, next) =
       return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
     }
     request.clearRateLimit?.()
-    await pool.query('UPDATE users SET login_otp_hash=NULL, login_otp_expires_at=NULL, updated_at=NOW() WHERE id=$1', [user.id])
-    response.json({ user: normalizeUser(user), token: signToken(user.id, user.auth_version) })
+    const loggedIn = await pool.query(`UPDATE users SET login_otp_hash=NULL, login_otp_expires_at=NULL, last_login_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING ${userFields}, auth_version`, [user.id])
+    response.json({ user: normalizeUser(loggedIn.rows[0]), token: signToken(user.id, loggedIn.rows[0].auth_version) })
   } catch (error) { next(error) }
 })
 
@@ -649,7 +650,7 @@ app.post('/api/auth/register/verify', loginLimiter, async (request, response, ne
       return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
     }
     request.clearRateLimit?.()
-    const updated = await pool.query(`UPDATE users SET is_active=TRUE, register_otp_hash=NULL, register_otp_expires_at=NULL, updated_at=NOW() WHERE id=$1 RETURNING ${userFields}, auth_version`, [user.id])
+    const updated = await pool.query(`UPDATE users SET is_active=TRUE, register_otp_hash=NULL, register_otp_expires_at=NULL, last_login_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING ${userFields}, auth_version`, [user.id])
     response.json({ user: normalizeUser(updated.rows[0]), token: signToken(user.id, updated.rows[0].auth_version) })
   } catch (error) { next(error) }
 })
