@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Archive, ArrowDownUp, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
+import { Activity, Archive, ArrowDownUp, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, Eye, EyeOff, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { code128BarcodeSvg } from './barcode'
 import { BackupView, BatchesView, BarcodeView, CashSessionView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import './App.css'
@@ -304,6 +304,18 @@ function ProfileView({ user, onSaveProfile, onChangePassword, onAvatarError }) {
       <section className="catalog-panel"><div className="panel-heading"><div><h2>Change password</h2><p className="muted">Verifikasi password lama untuk menetapkan yang baru.</p></div></div><form className="profile-form" onSubmit={submitPassword}><label>Current password<input required type="password" value={passwords.currentPassword} onChange={(event) => setPasswords({ ...passwords, currentPassword: event.target.value })} placeholder="Password saat ini" /></label><label>New password<input required minLength="8" type="password" value={passwords.newPassword} onChange={(event) => setPasswords({ ...passwords, newPassword: event.target.value })} placeholder="Minimal 8 karakter" /></label><label>Confirm new password<input required minLength="8" type="password" value={passwords.newPasswordConfirmation} onChange={(event) => setPasswords({ ...passwords, newPasswordConfirmation: event.target.value })} placeholder="Ulangi password baru" /></label><div className="modal-actions"><button type="submit" className="primary-button" disabled={savingPassword}><KeyRound size={16} /> {savingPassword ? 'Saving...' : 'Update password'}</button></div></form></section>
     </div>
   </>
+}
+
+function PasswordInput(props) {
+  const [visible, setVisible] = useState(false)
+  const label = visible ? 'Sembunyikan password' : 'Tampilkan password'
+
+  return <span className="password-input-wrap">
+    <input {...props} type={visible ? 'text' : 'password'} aria-label={props['aria-label'] || 'Password'} />
+    <button className="password-toggle" type="button" aria-label={label} aria-pressed={visible} onClick={() => setVisible((current) => !current)}>
+      {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+    </button>
+  </span>
 }
 
 function App() {
@@ -875,7 +887,43 @@ function App() {
     } catch (error) { pushToast('error', error.message || 'Pembayaran gagal dicatat.'); return false }
   }
 
-  if (!isAuthenticated) return <div className="login-page"><div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div><form className="login-card" onSubmit={registerStep === 'form' ? handleRegister : registerStep === 'otp' ? verifyRegisterOtp : resetStep ? resetPasswordWithOtp : otpStep ? handleVerifyOtp : handleLogin}><div className="login-brand"><Logo /><span>Ifal Store</span></div><p className="eyebrow">{registerStep === 'form' ? 'Create account' : registerStep === 'otp' ? 'Email verification' : resetStep ? 'Password reset' : otpStep ? 'MFA verification' : 'Welcome back'}</p><h1>{registerStep === 'form' ? 'Daftar akun baru' : registerStep === 'otp' ? 'Enter your OTP code' : resetStep ? 'Create a new password' : otpStep ? 'Enter your OTP code' : 'Sign in to your workspace'}</h1><p className="login-subtitle">{registerStep === 'form' ? 'Buat akun staff untuk mengelola produk dan inventaris.' : registerStep === 'otp' ? `A 6-digit code was sent to ${registerForm.email}.` : resetStep ? `Enter the reset code sent to ${loginForm.email}.` : otpStep ? `A 6-digit code was sent to ${loginForm.email}.` : 'Manage your products and inventory in one calm place.'}</p>{registerStep === 'form' && <label>Name<input autoFocus required type="text" value={registerForm.name} onChange={(event) => setRegisterForm({ ...registerForm, name: event.target.value })} placeholder="Your full name" /></label>}{registerStep === 'form' ? <label>Email address<input required type="email" value={registerForm.email} onChange={(event) => setRegisterForm({ ...registerForm, email: event.target.value })} placeholder="you@company.com" /></label> : registerStep === 'otp' ? null : <label>Email address<input autoFocus={!otpStep && !resetStep} required disabled={otpStep || resetStep} type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="you@company.com" /></label>}{registerStep === 'form' && <><label>Password<input required minLength="8" type="password" value={registerForm.password} onChange={(event) => setRegisterForm({ ...registerForm, password: event.target.value })} placeholder="At least 8 characters" /></label><label>Confirm password<input required minLength="8" type="password" value={registerForm.passwordConfirmation} onChange={(event) => setRegisterForm({ ...registerForm, passwordConfirmation: event.target.value })} placeholder="Repeat your password" /></label></>}{registerStep === 'otp' && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={registerOtp} onChange={(event) => setRegisterOtp(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}{!registerStep && (otpStep || resetStep) && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={resetStep ? resetOtp : otp} onChange={(event) => (resetStep ? setResetOtp : setOtp)(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}{!registerStep && !otpStep && !resetStep && <label>Password<input required type="password" value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder="Enter your password" /></label>}{!registerStep && resetStep && <><label>New password<input required minLength="8" type="password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} placeholder="At least 8 characters" /></label><label>Confirm password<input required minLength="8" type="password" value={resetPasswordConfirmation} onChange={(event) => setResetPasswordConfirmation(event.target.value)} placeholder="Repeat new password" /></label></>}{loginError && <p className="login-error">{loginError}</p>}<button className="primary-button login-button" type="submit">{registerStep === 'form' ? 'Daftar' : registerStep === 'otp' ? 'Verify OTP' : resetStep ? 'Reset password' : otpStep ? 'Verify OTP' : 'Sign in'} <ChevronDown size={16} className="login-arrow" /></button>{registerStep === 'otp' && <button type="button" className="secondary-button" onClick={resendRegisterOtp}>Kirim ulang kode</button>}{registerStep && <button type="button" className="secondary-button" onClick={() => { setRegisterStep(false); setRegisterOtp(''); setLoginError('') }}>Kembali ke masuk</button>}{!registerStep && otpStep && <button type="button" className="secondary-button" onClick={resendOtp}>Resend OTP</button>}{!registerStep && !otpStep && !resetStep && <button type="button" className="secondary-button" onClick={requestPasswordReset}>Forgot password?</button>}{!registerStep && !otpStep && !resetStep && <button type="button" className="secondary-button" onClick={() => { setRegisterStep('form'); setLoginError('') }}>Daftar</button>}{!registerStep && resetStep && <button type="button" className="secondary-button" onClick={() => setResetStep(false)}>Back to sign in</button>}<p className="demo-hint">{registerStep === 'form' ? 'Akun baru dibuat sebagai staff dan perlu verifikasi email.' : registerStep === 'otp' || resetStep || otpStep ? 'The code expires in 10 minutes.' : 'Use an active account from the users table.'}</p></form></div>
+  if (!isAuthenticated) return (
+    <div className="login-page">
+      <div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div>
+      <form className="login-card" onSubmit={registerStep === 'form' ? handleRegister : registerStep === 'otp' ? verifyRegisterOtp : resetStep ? resetPasswordWithOtp : otpStep ? handleVerifyOtp : handleLogin}>
+        <div className="login-brand"><Logo /><span>Ifal Store</span></div>
+        <p className="eyebrow">{registerStep === 'form' ? 'Create account' : registerStep === 'otp' ? 'Email verification' : resetStep ? 'Password reset' : otpStep ? 'MFA verification' : 'Welcome back'}</p>
+        <h1>{registerStep === 'form' ? 'Daftar akun baru' : registerStep === 'otp' ? 'Enter your OTP code' : resetStep ? 'Create a new password' : otpStep ? 'Enter your OTP code' : 'Sign in to your workspace'}</h1>
+        <p className="login-subtitle">{registerStep === 'form' ? 'Buat akun staff untuk mengelola produk dan inventaris.' : registerStep === 'otp' ? `A 6-digit code was sent to ${registerForm.email}.` : resetStep ? `Enter the reset code sent to ${loginForm.email}.` : otpStep ? `A 6-digit code was sent to ${loginForm.email}.` : 'Manage your products and inventory in one calm place.'}</p>
+        {registerStep === 'form' && <label>Name<input autoFocus required type="text" value={registerForm.name} onChange={(event) => setRegisterForm({ ...registerForm, name: event.target.value })} placeholder="Your full name" /></label>}
+        {registerStep === 'form'
+          ? <label>Email address<input required type="email" value={registerForm.email} onChange={(event) => setRegisterForm({ ...registerForm, email: event.target.value })} placeholder="you@company.com" /></label>
+          : registerStep === 'otp' ? null : <label>Email address<input autoFocus={!otpStep && !resetStep} required disabled={otpStep || resetStep} type="email" value={loginForm.email} onChange={(event) => setLoginForm({ ...loginForm, email: event.target.value })} placeholder="you@company.com" /></label>}
+        {registerStep === 'form' && <>
+          <label>Password<PasswordInput required minLength="8" value={registerForm.password} onChange={(event) => setRegisterForm({ ...registerForm, password: event.target.value })} placeholder="At least 8 characters" /></label>
+          <label>Confirm password<PasswordInput aria-label="Confirm password" required minLength="8" value={registerForm.passwordConfirmation} onChange={(event) => setRegisterForm({ ...registerForm, passwordConfirmation: event.target.value })} placeholder="Repeat your password" /></label>
+        </>}
+        {registerStep === 'otp' && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={registerOtp} onChange={(event) => setRegisterOtp(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}
+        {!registerStep && (otpStep || resetStep) && <label>OTP code<input autoFocus required inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={resetStep ? resetOtp : otp} onChange={(event) => (resetStep ? setResetOtp : setOtp)(event.target.value.replace(/\D/g, ''))} placeholder="Enter 6-digit code" /></label>}
+        {!registerStep && !otpStep && !resetStep && <label>Password<PasswordInput required value={loginForm.password} onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })} placeholder="Enter your password" /></label>}
+        {!registerStep && resetStep && <>
+          <label>New password<PasswordInput required minLength="8" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} placeholder="At least 8 characters" /></label>
+          <label>Confirm password<PasswordInput aria-label="Confirm password" required minLength="8" value={resetPasswordConfirmation} onChange={(event) => setResetPasswordConfirmation(event.target.value)} placeholder="Repeat new password" /></label>
+        </>}
+        {loginError && <p className="login-error">{loginError}</p>}
+        <button className="primary-button login-button" type="submit">{registerStep === 'form' ? 'Daftar' : registerStep === 'otp' ? 'Verify OTP' : resetStep ? 'Reset password' : otpStep ? 'Verify OTP' : 'Sign in'} <ChevronDown size={16} className="login-arrow" /></button>
+        <div className="login-actions">
+          {registerStep === 'otp' && <button type="button" className="secondary-button" onClick={resendRegisterOtp}>Kirim ulang kode</button>}
+          {registerStep && <button type="button" className="secondary-button" onClick={() => { setRegisterStep(false); setRegisterOtp(''); setLoginError('') }}>Kembali ke masuk</button>}
+          {!registerStep && otpStep && <button type="button" className="secondary-button" onClick={resendOtp}>Resend OTP</button>}
+          {!registerStep && !otpStep && !resetStep && <button type="button" className="secondary-button" onClick={requestPasswordReset}>Forgot password?</button>}
+          {!registerStep && !otpStep && !resetStep && <button type="button" className="secondary-button" onClick={() => { setRegisterStep('form'); setLoginError('') }}>Daftar</button>}
+          {!registerStep && resetStep && <button type="button" className="secondary-button" onClick={() => setResetStep(false)}>Back to sign in</button>}
+        </div>
+        <p className="demo-hint">{registerStep === 'form' ? 'Akun baru dibuat sebagai staff dan perlu verifikasi email.' : registerStep === 'otp' || resetStep || otpStep ? 'The code expires in 10 minutes.' : 'Use an active account from the users table.'}</p>
+      </form>
+    </div>
+  )
 
   return (
     <div className="app-shell">
