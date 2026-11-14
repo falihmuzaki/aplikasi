@@ -6,15 +6,29 @@ const { Pool } = pg
 const email = process.env.ADMIN_EMAIL
 const password = process.env.ADMIN_PASSWORD
 const name = process.env.ADMIN_NAME || 'Administrator'
+const databaseUrl = process.env.DATABASE_URL
 
 if (!email || !password) {
   console.error('Set ADMIN_EMAIL dan ADMIN_PASSWORD di file .env terlebih dahulu.')
   process.exit(1)
 }
 
+let parsedDatabaseUrl
+try {
+  parsedDatabaseUrl = new URL(databaseUrl)
+} catch {
+  console.error('Set DATABASE_URL di file .env ke connection string PostgreSQL yang valid.')
+  process.exit(1)
+}
+
+if (!['postgres:', 'postgresql:'].includes(parsedDatabaseUrl.protocol) || !parsedDatabaseUrl.hostname || !parsedDatabaseUrl.username || !parsedDatabaseUrl.password) {
+  console.error('DATABASE_URL harus berisi URL PostgreSQL dengan host, username, dan password.')
+  process.exit(1)
+}
+
 const salt = crypto.randomBytes(16).toString('hex')
 const passwordHash = `${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new Pool({ connectionString: databaseUrl })
 
 try {
   await pool.query(`
