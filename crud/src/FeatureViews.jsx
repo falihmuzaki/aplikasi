@@ -3,6 +3,38 @@ import { CirclePlus, Printer, RefreshCw, Save, Truck, Upload, X } from 'lucide-r
 import { API_URL } from './api-url'
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, 'Content-Type': 'application/json', Accept: 'application/json' })
 const idr = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0)
+const backupTables = [
+  'users', 'cash_sessions', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
+  'purchase_orders', 'purchase_order_items', 'purchase_payments', 'supplier_returns',
+  'supplier_return_items', 'sales_orders', 'sales_order_items', 'product_batches',
+  'sales_payments', 'sales_order_item_batches', 'warehouse_stocks', 'stock_movements',
+  'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses',
+]
+const backupTableLabels = {
+  users: 'Pengguna',
+  cash_sessions: 'Sesi kas',
+  categories: 'Kategori',
+  suppliers: 'Pemasok',
+  warehouses: 'Gudang',
+  products: 'Produk',
+  customers: 'Pelanggan',
+  purchase_orders: 'Pesanan pembelian',
+  purchase_order_items: 'Item pesanan pembelian',
+  purchase_payments: 'Pembayaran pemasok',
+  supplier_returns: 'Retur pemasok',
+  supplier_return_items: 'Item retur pemasok',
+  sales_orders: 'Pesanan penjualan',
+  sales_order_items: 'Item penjualan',
+  product_batches: 'Batch produk',
+  sales_payments: 'Pembayaran penjualan',
+  sales_order_item_batches: 'Alokasi batch penjualan',
+  warehouse_stocks: 'Stok gudang',
+  stock_movements: 'Log pergerakan stok',
+  stock_transfers: 'Transfer stok',
+  stocktakes: 'Stok opname',
+  stocktake_items: 'Item stok opname',
+  operating_expenses: 'Biaya operasional',
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, { ...options, headers: { ...headers(), ...options.headers } })
@@ -207,6 +239,8 @@ export function BackupView({ onRestored }) {
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
+  const [pendingRestore, setPendingRestore] = useState(null)
+  const [restoreAcknowledged, setRestoreAcknowledged] = useState(false)
   const exportBackup = async () => {
     setBusy(true); setError(''); setStatus('')
     try {
@@ -225,21 +259,59 @@ export function BackupView({ onRestored }) {
     if (!file) return
     event.target.value = ''
     if (file.size > 50 * 1024 * 1024) { setError('Ukuran backup maksimal 50 MB.'); return }
-    if (!window.confirm('Pemulihan akan MENGGANTI seluruh data aplikasi saat ini dengan isi file backup. Pastikan file benar dan berisi akun admin aktif. Lanjutkan?')) return
     setBusy(true); setError(''); setStatus('')
     try {
       const backup = JSON.parse(await file.text())
-      const result = await api('/backup/restore', { method: 'POST', body: JSON.stringify(backup) })
+      if (backup?.format !== 'ifal-store-backup' || backup.version !== 1 || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) throw new Error('File bukan backup Ifal Store yang didukung.')
+      const tables = backup.tables
+      if (Object.keys(tables).some((table) => !backupTables.includes(table))) throw new Error('Backup berisi tabel yang tidak dikenal.')
+      const missingTables = backupTables.filter((table) => table !== 'cash_sessions' && !Array.isArray(tables[table]))
+      if (missingTables.length || backupTables.some((table) => tables[table] !== undefined && !Array.isArray(tables[table]))) throw new Error('Struktur tabel pada backup tidak lengkap atau tidak valid.')
+      if (backupTables.some((table) => (tables[table] || []).some((row) => !row || typeof row !== 'object' || Array.isArray(row)))) throw new Error('Backup berisi baris data yang tidak valid.')
+      const totalRows = backupTables.reduce((total, table) => total + (tables[table]?.length || 0), 0)
+      if (totalRows > 300_000) throw new Error('Backup melebihi batas 300.000 baris.')
+      setPendingRestore({
+        backup,
+        fileName: file.name,
+        createdAt: backup.createdAt,
+        totalRows,
+        counts: backupTables.map((table) => ({ table, count: tables[table]?.length || 0 })),
+      })
+      setRestoreAcknowledged(false)
+    } catch (cause) { setError(cause instanceof SyntaxError ? 'File bukan JSON backup yang valid.' : cause.message || 'Backup gagal dibaca.') } finally { setBusy(false) }
+  }
+  const confirmRestore = async () => {
+    if (!pendingRestore || !restoreAcknowledged) return
+    setBusy(true); setError(''); setStatus('')
+    try {
+      const result = await api('/backup/restore', { method: 'POST', body: JSON.stringify(pendingRestore.backup) })
       setStatus(result.message)
+      setPendingRestore(null)
       window.setTimeout(onRestored, 1200)
-    } catch (cause) { setError(cause instanceof SyntaxError ? 'File bukan JSON backup yang valid.' : cause.message || 'Pemulihan gagal.') } finally { setBusy(false) }
+    } catch (cause) { setError(cause.message || 'Pemulihan gagal.') } finally { setBusy(false) }
+  }
+  const cancelRestore = () => {
+    if (busy) return
+    setPendingRestore(null)
+    setRestoreAcknowledged(false)
+    setError('')
   }
   return <>
     <header className="topbar"><div><p className="breadcrumb">Administration / <span>Backup</span></p><h1>Backup & pemulihan data</h1></div></header>
     <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Cadangkan data</h2><p className="muted">Unduh snapshot seluruh data aplikasi dalam format JSON untuk disimpan secara aman.</p></div></div><div className="toolbar"><button className="primary-button" onClick={exportBackup} disabled={busy}><Save size={16} /> {busy ? 'Memproses...' : 'Unduh backup'}</button></div></section>
     <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Pulihkan dari backup</h2><p className="muted">Pilih file JSON backup Ifal Store. Pemulihan mengganti seluruh data saat ini dan Anda akan diminta masuk kembali.</p></div></div><div className="toolbar"><label className="secondary-button backup-upload"><Upload size={16} /> Pilih file backup<input type="file" accept="application/json,.json" onChange={restoreBackup} disabled={busy} /></label></div></section>
-    {error && <p className="login-error">{error}</p>}{status && <p className="muted backup-status">{status}</p>}
+    {error && !pendingRestore && <p className="login-error">{error}</p>}{status && <p className="muted backup-status">{status}</p>}
     <section className="catalog-panel backup-warning"><strong>Perhatian keamanan & pemulihan</strong><p>File backup berisi data usaha dan hash kata sandi akun (OTP sementara tidak disimpan). Batasi akses file dan jangan kirim melalui kanal publik. Proses pemulihan tidak dapat dibatalkan; buat backup terbaru sebelum menjalankannya.</p></section>
+    {pendingRestore && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && cancelRestore()}><section className="modal backup-preview" role="dialog" aria-modal="true" aria-labelledby="backup-preview-title" aria-describedby="backup-preview-description">
+      <div className="modal-heading"><div><h2 id="backup-preview-title">Tinjau backup</h2><p className="muted">{pendingRestore.fileName}</p></div><button type="button" className="close-button" aria-label="Tutup tinjauan backup" onClick={cancelRestore} disabled={busy}><X size={19} /></button></div>
+      <p id="backup-preview-description" className="muted">Backup dibuat: {pendingRestore.createdAt && !Number.isNaN(Date.parse(pendingRestore.createdAt)) ? new Date(pendingRestore.createdAt).toLocaleString('id-ID') : 'Tanggal tidak tersedia'}</p>
+      <div className="backup-preview-summary"><strong>{pendingRestore.totalRows.toLocaleString('id-ID')}</strong><span>baris data akan dipulihkan</span></div>
+      <ul className="backup-preview-counts">{pendingRestore.counts.map(({ table, count }) => <li key={table}><span>{backupTableLabels[table]}</span><strong>{count.toLocaleString('id-ID')}</strong></li>)}</ul>
+      {error && <p className="login-error">{error}</p>}
+      <div className="backup-warning backup-preview-warning"><strong>Data saat ini akan diganti.</strong><p>Semua data usaha aktif akan ditimpa dan Anda akan diminta masuk kembali. Pastikan file backup ini benar dan Anda memiliki salinan cadangan terbaru.</p></div>
+      <label className="backup-acknowledge"><input type="checkbox" checked={restoreAcknowledged} onChange={(event) => setRestoreAcknowledged(event.target.checked)} /><span>Saya memahami bahwa pemulihan mengganti seluruh data saat ini.</span></label>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={cancelRestore} disabled={busy}>Batal</button><button type="button" className="primary-button" onClick={confirmRestore} disabled={busy || !restoreAcknowledged}>{busy ? 'Memulihkan...' : 'Ganti semua data'}</button></div>
+    </section></div>}
   </>
 }
 
