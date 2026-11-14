@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Archive, ArrowDownUp, ArrowRight, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, Eye, EyeOff, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
+import { Activity, Archive, ArrowDownUp, ArrowRight, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, Eye, EyeOff, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, Moon, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Sun, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { code128BarcodeSvg } from './barcode'
 import { BackupView, BatchesView, BarcodeView, CashSessionView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import { API_URL } from './api-url'
@@ -409,6 +409,7 @@ function PasswordInput(props) {
 }
 
 function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('ifal-store-theme') === 'dark' ? 'dark' : 'light')
   const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem('lumina-auth') === 'true' && Boolean(localStorage.getItem('lumina-token')))
   const [currentUser, setCurrentUser] = useState(() => JSON.parse(localStorage.getItem('lumina-user') || 'null'))
   const isAdmin = currentUser?.role === 'admin'
@@ -464,6 +465,10 @@ function App() {
   const [importRows, setImportRows] = useState(null)
   const [featureView, setFeatureView] = useState('')
   const [featureMenuOpen, setFeatureMenuOpen] = useState(false)
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('ifal-store-theme', theme)
+  }, [theme])
   const pushToast = (type, message) => { const id = Date.now() + Math.random(); setToasts((list) => [...list, { id, type, message }]); setTimeout(() => setToasts((list) => list.filter((item) => item.id !== id)), 4000) }
   useEffect(() => {
     const openCashSession = () => setFeatureView('cash')
@@ -1063,6 +1068,7 @@ function App() {
             <button className={`nav-item ${activeView === 'archive' ? 'active' : ''}`} onClick={() => setActiveView('archive')}><Archive size={18} /> Archive</button>
           </div>
           {isAdmin && <div className="nav-group"><p className="nav-group-label">Administration</p><button className={`nav-item ${activeView === 'users' ? 'active' : ''}`} onClick={() => setActiveView('users')}><UserRound size={18} /> Users <span className="nav-count">{users.length}</span></button><button className={`nav-item ${activeView === 'stock-log' ? 'active' : ''}`} onClick={() => setActiveView('stock-log')}><ClipboardList size={18} /> Stock log</button></div>}
+          <div className="nav-group"><p className="nav-group-label">Appearance</p><button className="nav-item theme-toggle" type="button" aria-pressed={theme === 'dark'} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}{theme === 'dark' ? 'Mode terang' : 'Mode gelap'}</button></div>
           <div className="nav-group"><p className="nav-group-label">Account</p><button className={`nav-item ${activeView === 'profile' ? 'active' : ''}`} onClick={() => setActiveView('profile')}><ShieldCheck size={18} /> Profile</button></div>
         </nav>
         <div className="sidebar-bottom"><button className="profile-trigger" title="Open profile" onClick={() => setActiveView('profile')}><Avatar user={currentUser} /><div><strong>{currentUser?.name || 'User'}</strong><span>{currentUser?.role || 'User'}</span></div></button><button className="logout-button" title="Log out" onClick={handleLogout}><LogOut size={15} /></button></div>
