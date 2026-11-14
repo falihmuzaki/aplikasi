@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { Redis } from '@upstash/redis'
 import pg from 'pg'
 import { sendOtpEmail } from './mailer.js'
+import { validateStorefrontOrder } from './storefront-validation.js'
 
 const { Pool } = pg
 const app = express()
@@ -30,6 +31,7 @@ function initializeSchema() {
 }
 
 app.use(cors())
+app.use('/api/storefront', express.json({ limit: '32kb' }))
 app.use(express.json({ limit: '50mb' }))
 
 if (process.env.VERCEL) {
@@ -87,7 +89,7 @@ function createRateLimiter({ windowMs, max, message, prefix }) {
 
   const middleware = async (request, response, next) => {
     const ip = request.ip || request.socket?.remoteAddress || 'unknown'
-    const email = String(request.body?.email || '').trim().toLowerCase()
+    const email = String(request.body?.email || request.body?.customerEmail || '').trim().toLowerCase()
     const key = `${ip}|${email}`
     const now = Date.now()
     if (distributedLimiter) {
@@ -155,6 +157,12 @@ const otpSendLimiter = createRateLimiter({
   max: 5,
   message: 'Terlalu banyak permintaan kode. Coba lagi nanti.',
   prefix: 'ifal-store:rate-limit:otp-send',
+})
+const storefrontOrderLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: 'Terlalu banyak pesanan dari perangkat ini. Coba lagi nanti.',
+  prefix: 'ifal-store:rate-limit:storefront-order',
 })
 
 app.get('/api/product-batches', requireAuth, async (request, response, next) => {
@@ -328,6 +336,9 @@ function normalizeSalesOrder(row) {
     customerName: row.customer_name,
     customerEmail: row.customer_email,
     customerPhone: row.customer_phone,
+    source: row.source || 'internal',
+    fulfillmentMethod: row.fulfillment_method || 'pickup',
+    deliveryAddress: row.delivery_address ?? null,
     status: row.status,
     notes: row.notes,
     createdByName: row.created_by_name,
@@ -723,6 +734,34 @@ app.get('/api/products', requireAuth, async (_request, response, next) => {
   try {
     const result = await pool.query(`SELECT ${productFields} FROM products WHERE deleted_at IS NULL ORDER BY created_at DESC`)
     response.json(result.rows.map(normalizeProduct))
+  } catch (error) { next(error) }
+})
+
+app.get('/api/storefront/products', async (_request, response, next) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.id, p.name, p.category, p.price,
+        CASE WHEN p.media_type LIKE 'image/%' AND length(p.media_url)<=300000 THEN p.media_type ELSE NULL END AS media_type,
+        CASE WHEN p.media_type LIKE 'image/%' AND length(p.media_url)<=300000 THEN p.media_url ELSE NULL END AS media_url,
+        CASE WHEN p.track_batches THEN EXISTS (
+          SELECT 1 FROM product_batches pb
+          WHERE pb.product_id=p.id AND pb.warehouse_id=default_warehouse.id AND pb.quantity>0
+        ) ELSE COALESCE(ws.stock, 0)>0 END AS available
+      FROM products p
+      CROSS JOIN (SELECT id FROM warehouses WHERE is_default=TRUE LIMIT 1) default_warehouse
+      LEFT JOIN warehouse_stocks ws ON ws.warehouse_id=default_warehouse.id AND ws.product_id=p.id
+      WHERE p.deleted_at IS NULL
+      ORDER BY p.category, p.name
+    `)
+    response.set('Cache-Control', 'public, max-age=30')
+    response.json(result.rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      category: row.category,
+      price: Number(row.price),
+      available: row.available,
+      media: row.media_url ? { type: row.media_type, url: row.media_url } : null,
+    })))
   } catch (error) { next(error) }
 })
 
@@ -1960,6 +1999,108 @@ async function readSalesOrders(where = '', values = []) {
   `, values)
   return result.rows.map(normalizeSalesOrder)
 }
+
+app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, response, next) => {
+  const validation = validateStorefrontOrder(request.body)
+  if (validation.error) return response.status(400).json({ message: validation.error })
+  const orderInput = validation.data
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const warehouseResult = await client.query('SELECT id FROM warehouses WHERE is_default=TRUE FOR SHARE')
+    if (!warehouseResult.rowCount) {
+      await client.query('ROLLBACK')
+      return response.status(503).json({ message: 'Toko online belum siap menerima pesanan.' })
+    }
+    const warehouseId = warehouseResult.rows[0].id
+    const orderResult = await client.query(
+      `INSERT INTO sales_orders
+        (customer_name, customer_email, customer_phone, warehouse_id, notes, source, fulfillment_method, delivery_address)
+       VALUES ($1,$2,$3,$4,$5,'online',$6,$7)
+       RETURNING id, created_at`,
+      [orderInput.customerName, orderInput.customerEmail, orderInput.customerPhone, warehouseId, orderInput.notes, orderInput.fulfillmentMethod, orderInput.deliveryAddress],
+    )
+    const order = orderResult.rows[0]
+    const date = new Date(order.created_at).toISOString().slice(0, 10).replaceAll('-', '')
+    const orderNumber = `SO-${date}-${String(order.id).padStart(6, '0')}`
+    const invoiceNumber = orderNumber.replace(/^SO-/, 'INV-')
+    await client.query('UPDATE sales_orders SET order_number=$1, invoice_number=$2 WHERE id=$3', [orderNumber, invoiceNumber, order.id])
+
+    let subtotalCents = 0n
+    for (const item of [...orderInput.items].sort((a, b) => a.productId - b.productId)) {
+      const productResult = await client.query(`
+        SELECT p.id, p.name, p.sku, p.price, p.stock, p.low_stock_threshold, p.track_batches,
+          (SELECT poi.unit_cost FROM purchase_order_items poi
+            JOIN purchase_orders po ON po.id=poi.purchase_order_id
+            WHERE poi.product_id=p.id AND poi.received_quantity>0
+            ORDER BY po.created_at DESC, poi.id DESC LIMIT 1) AS last_unit_cost
+        FROM products p
+        WHERE p.id=$1 AND p.deleted_at IS NULL
+        FOR UPDATE
+      `, [item.productId])
+      if (!productResult.rowCount) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: 'Salah satu produk sudah tidak tersedia.' })
+      }
+      const product = productResult.rows[0]
+      const warehouseStockResult = await client.query('SELECT stock FROM warehouse_stocks WHERE warehouse_id=$1 AND product_id=$2 FOR UPDATE', [warehouseId, product.id])
+      const warehouseStock = Number(warehouseStockResult.rows[0]?.stock || 0)
+      if (item.quantity > warehouseStock || item.quantity > Number(product.stock)) {
+        await client.query('ROLLBACK')
+        return response.status(409).json({ message: `Stok "${product.name}" tidak mencukupi. Silakan perbarui keranjang.` })
+      }
+
+      const [wholePrice, fractionalPrice = ''] = String(product.price).split('.')
+      subtotalCents += (BigInt(wholePrice) * 100n + BigInt(fractionalPrice.padEnd(2, '0'))) * BigInt(item.quantity)
+      if (subtotalCents > 999_999_999_999n) {
+        await client.query('ROLLBACK')
+        return response.status(400).json({ message: 'Total pesanan melebihi batas nominal.' })
+      }
+
+      const stockAfter = Number(product.stock) - item.quantity
+      const warehouseStockAfter = warehouseStock - item.quantity
+      const status = stockAfter === 0 ? 'Out of stock' : stockAfter <= product.low_stock_threshold ? 'Low stock' : 'Active'
+      await client.query('UPDATE products SET stock=$1, status=$2, updated_at=NOW() WHERE id=$3', [stockAfter, status, product.id])
+      await client.query('UPDATE warehouse_stocks SET stock=$1 WHERE warehouse_id=$2 AND product_id=$3', [warehouseStockAfter, warehouseId, product.id])
+      const salesItemResult = await client.query(
+        'INSERT INTO sales_order_items (sales_order_id, product_id, product_name, sku, quantity, unit_price, unit_cost) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+        [order.id, product.id, product.name, product.sku, item.quantity, product.price, Number(product.last_unit_cost || 0)],
+      )
+
+      if (product.track_batches) {
+        const batches = await client.query('SELECT id, quantity FROM product_batches WHERE product_id=$1 AND warehouse_id=$2 AND quantity>0 ORDER BY expires_at NULLS LAST, created_at, id FOR UPDATE', [product.id, warehouseId])
+        if (batches.rows.reduce((sum, batch) => sum + batch.quantity, 0) < item.quantity) {
+          await client.query('ROLLBACK')
+          return response.status(409).json({ message: `Batch/serial "${product.name}" belum mencukupi untuk pesanan.` })
+        }
+        let remaining = item.quantity
+        for (const batch of batches.rows) {
+          if (!remaining) break
+          const allocated = Math.min(remaining, batch.quantity)
+          await client.query('UPDATE product_batches SET quantity=quantity-$1 WHERE id=$2', [allocated, batch.id])
+          await client.query('INSERT INTO sales_order_item_batches (sales_order_item_id, product_batch_id, quantity) VALUES ($1,$2,$3)', [salesItemResult.rows[0].id, batch.id, allocated])
+          remaining -= allocated
+        }
+      }
+
+      await client.query(
+        'INSERT INTO stock_movements (product_id, warehouse_id, user_id, user_name, delta, stock_before, stock_after, reason) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7)',
+        [product.id, warehouseId, 'Pelanggan online', -item.quantity, warehouseStock, warehouseStockAfter, `Online order ${orderNumber}`],
+      )
+    }
+
+    await client.query('COMMIT')
+    response.status(201).json({
+      orderNumber,
+      invoiceNumber,
+      totalAmount: Number(subtotalCents) / 100,
+      fulfillmentMethod: orderInput.fulfillmentMethod,
+    })
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    next(error)
+  } finally { client.release() }
+})
 
 app.get('/api/sales', requireAuth, async (_request, response, next) => {
   try { response.json(await readSalesOrders()) } catch (error) { next(error) }

@@ -171,6 +171,9 @@ CREATE INDEX IF NOT EXISTS sales_orders_created_at_idx ON sales_orders(created_a
 CREATE INDEX IF NOT EXISTS sales_orders_customer_idx ON sales_orders(customer_id);
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS discount_rate NUMERIC(5, 2) NOT NULL DEFAULT 0 CHECK (discount_rate >= 0 AND discount_rate <= 100);
 ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS tax_rate NUMERIC(5, 2) NOT NULL DEFAULT 0 CHECK (tax_rate >= 0 AND tax_rate <= 100);
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'internal' CHECK (source IN ('internal', 'online'));
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS fulfillment_method VARCHAR(16) NOT NULL DEFAULT 'pickup' CHECK (fulfillment_method IN ('pickup', 'delivery'));
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
 
 CREATE TABLE IF NOT EXISTS sales_order_items (
   id BIGSERIAL PRIMARY KEY,

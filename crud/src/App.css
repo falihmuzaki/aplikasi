@@ -1081,3 +1081,5 @@ html, body, #root { max-width: 100%; overflow-x: clip; }
 .backup-preview-warning { margin: 14px 0; padding: 12px; }
 .backup-acknowledge { display: flex !important; align-items: flex-start; gap: 9px; margin: 14px 0 0 !important; color: var(--ink) !important; font-size: 12px !important; }
 .backup-acknowledge input { flex: 0 0 auto; width: 16px !important; height: 16px; margin: 1px 0 0 !important; accent-color: var(--green); }
+.storefront-login-link { display: block; margin-top: 16px; color: var(--blue); font-size: 11px; font-weight: 700; text-align: center; text-decoration: none; }
+.storefront-login-link:hover { text-decoration: underline; }
