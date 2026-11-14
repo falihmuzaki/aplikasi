@@ -62,6 +62,8 @@ Menu **Suppliers** menyimpan nama pemasok dan informasi kontak; admin dapat mena
 
 Menu **Purchases** membuat pesanan pembelian berisi pemasok, produk, jumlah, dan harga beli per unit. Pesanan dapat diterima sekaligus atau sebagian. Setiap penerimaan menambah stok produk dan membuat catatan pada **Stock log**; status pesanan berubah dari *Dipesan* ke *Diterima sebagian* lalu *Diterima*. Admin maupun staff yang sudah login dapat membuat pesanan dan mencatat penerimaan.
 
+Daftar produk dapat diimpor dari CSV dengan kolom wajib `Name`, `Category`, `Price`, dan `Stock`; `Status` dan `SKU` opsional. Impor menampilkan pratinjau dan validasi sebelum menyimpan, serta mendukung koma, tanda kutip, dan baris baru di dalam nilai CSV yang dikutip.
+
 Tabel `suppliers`, `purchase_orders`, `purchase_order_items`, `customers`, `sales_orders`, dan `sales_order_items` dibuat otomatis saat server API dijalankan. Endpoint API menggunakan token login:
 
 - `GET /api/suppliers`, `POST /api/suppliers`, `PUT /api/suppliers/:id`, `DELETE /api/suppliers/:id`

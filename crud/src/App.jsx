@@ -3,6 +3,7 @@ import { Activity, Archive, ArrowDownUp, ArrowRight, Bell, Box, Check, ChevronDo
 import { code128BarcodeSvg } from './barcode'
 import { BackupView, BatchesView, BarcodeView, CashSessionView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import { API_URL } from './api-url'
+import { parseCsv } from './csv'
 import './App.css'
 
 const seedProducts = [
@@ -778,16 +779,19 @@ function App() {
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      const text = String(reader.result || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-      const lines = text.split('\n').filter((line) => line.trim() !== '')
-      if (lines.length < 2) { pushToast('error', 'CSV kosong atau tanpa data.'); return }
-      const parseLine = (line) => { const cells = []; let value = ''; let quoted = false; for (let i = 0; i < line.length; i += 1) { const char = line[i]; if (quoted) { if (char === '"') { if (line[i + 1] === '"') { value += '"'; i += 1 } else quoted = false } else value += char } else if (char === '"') quoted = true; else if (char === ',') { cells.push(value); value = '' } else value += char } cells.push(value); return cells }
-      const header = parseLine(lines[0]).map((cell) => cell.trim().toLowerCase())
+      let records
+      try { records = parseCsv(reader.result) } catch (error) { pushToast('error', error.message || 'Format CSV tidak valid.'); return }
+      if (records.length < 2) { pushToast('error', 'CSV kosong atau tanpa data.'); return }
+      const header = records[0].map((cell) => cell.trim().toLowerCase())
+      const duplicateHeaders = header.filter((name, index) => name && header.indexOf(name) !== index)
+      if (duplicateHeaders.length) { pushToast('error', `Header CSV duplikat: ${[...new Set(duplicateHeaders)].join(', ')}.`); return }
+      const requiredHeaders = ['name', 'category', 'price', 'stock']
+      const missingHeaders = requiredHeaders.filter((name) => !header.includes(name))
+      if (missingHeaders.length) { pushToast('error', `Kolom wajib tidak ditemukan: ${missingHeaders.join(', ')}.`); return }
       const col = (name) => header.indexOf(name)
       const idx = { name: col('name'), category: col('category'), price: col('price'), stock: col('stock'), status: col('status'), sku: col('sku') }
       const seenSku = new Map()
-      const rows = lines.slice(1).map((line, rowIndex) => {
-        const cells = parseLine(line)
+      const rows = records.slice(1).map((cells, rowIndex) => {
         const at = (position) => position >= 0 ? (cells[position] ?? '').trim() : ''
         const name = at(idx.name)
         const category = at(idx.category)
@@ -807,6 +811,7 @@ function App() {
       })
       setImportRows(rows)
     }
+    reader.onerror = () => pushToast('error', 'File CSV gagal dibaca.')
     reader.readAsText(file)
   }
   const confirmImport = async () => {

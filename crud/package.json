@@ -9,6 +9,7 @@
     "db:admin": "node server/create-admin.js",
     "build": "vite build",
     "lint": "oxlint",
+    "test": "node --test",
     "preview": "vite preview"
   },
   "dependencies": {
