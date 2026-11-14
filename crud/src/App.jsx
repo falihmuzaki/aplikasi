@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Archive, ArrowDownUp, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, Eye, EyeOff, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
+import { Activity, Archive, ArrowDownUp, ArrowRight, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, Eye, EyeOff, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { code128BarcodeSvg } from './barcode'
 import { BackupView, BatchesView, BarcodeView, CashSessionView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import './App.css'
@@ -499,6 +499,16 @@ function App() {
   const maxCategoryStock = Math.max(1, ...dashboardCategories.map((item) => item.stockUnits))
   const inventoryHealthyCount = Math.max(0, dashboardStats.totalProducts - dashboardStats.outOfStockCount - dashboardStats.lowStockCount)
   const priorityProducts = [...lowOrOut].sort((a, b) => (a.stock - b.stock) || a.name.localeCompare(b.name)).slice(0, 5)
+  const openDashboardProducts = (status = 'All status') => {
+    setQuery('')
+    setFilter(status)
+    setCategory('All categories')
+    setPriceMin('')
+    setPriceMax('')
+    setFiltersOpen(false)
+    setPage(1)
+    setActiveView('products')
+  }
   const now = new Date()
   const todayLabel = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
@@ -950,11 +960,21 @@ function App() {
 <header className="topbar"><div><p className="breadcrumb">Workspace / <span>Dashboard</span></p><h1>Dashboard inventaris</h1></div><div className="dashboard-actions"><button className="secondary-button" onClick={() => setStatsRefresh((value) => value + 1)}><RefreshCw size={16} /> Muat ulang</button><button className="primary-button" onClick={exportAllCsv}><ArrowDownUp size={18} /> Export CSV</button></div></header>
 <section className="welcome-row"><div><p className="muted">{todayLabel}</p><h2>{greeting}, {firstName} <span className="spark">✦</span></h2><p className="muted">Ringkasan kondisi stok, nilai inventaris, dan kategori produk.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL tersinkron' : 'Mode lokal'}</div></section>
 <section className="stats-grid dashboard-grid" aria-label="Ringkasan inventaris">
-  <div className="stat-card"><div className="stat-label"><span>Total produk</span><span className="stat-icon blue"><Box size={17} /></span></div><strong>{dashboardStats.totalProducts}</strong><small><b className="positive">{dashboardStats.categoryCount}</b> kategori</small></div>
-  <div className="stat-card"><div className="stat-label"><span>Total unit stok</span><span className="stat-icon green"><Check size={17} /></span></div><strong>{dashboardStats.totalStockUnits}</strong><small>unit di seluruh katalog</small></div>
-  <div className="stat-card"><div className="stat-label"><span>Nilai inventaris</span><span className="stat-icon green">Rp</span></div><strong>{formatIDR(dashboardStats.inventoryValue)}</strong><small>berdasarkan harga jual produk</small></div>
-  <div className="stat-card"><div className="stat-label"><span>Stok habis</span><span className="stat-icon red"><Activity size={17} /></span></div><strong>{dashboardStats.outOfStockCount}</strong><small><b className="negative">Perlu restock segera</b></small></div>
-  <div className="stat-card"><div className="stat-label"><span>Stok menipis</span><span className="stat-icon orange"><Activity size={17} /></span></div><strong>{dashboardStats.lowStockCount}</strong><small><b className="negative">Mendekati batas minimum</b></small></div>
+  <button type="button" className="stat-card dashboard-stat-card" onClick={() => openDashboardProducts()} aria-label="Buka semua produk">
+    <span className="stat-label"><span>Total produk</span><span className="stat-icon blue"><Box size={17} /></span></span><strong>{dashboardStats.totalProducts}</strong><small><b className="positive">{dashboardStats.categoryCount}</b> kategori</small><span className="dashboard-stat-action">Buka katalog <ArrowRight size={13} /></span>
+  </button>
+  <button type="button" className="stat-card dashboard-stat-card" onClick={() => openDashboardProducts()} aria-label="Lihat stok semua produk">
+    <span className="stat-label"><span>Total unit stok</span><span className="stat-icon green"><Check size={17} /></span></span><strong>{dashboardStats.totalStockUnits}</strong><small>unit di seluruh katalog</small><span className="dashboard-stat-action">Lihat stok <ArrowRight size={13} /></span>
+  </button>
+  <button type="button" className="stat-card dashboard-stat-card" onClick={() => openDashboardProducts()} aria-label="Buka nilai inventaris di katalog produk">
+    <span className="stat-label"><span>Nilai inventaris</span><span className="stat-icon green">Rp</span></span><strong>{formatIDR(dashboardStats.inventoryValue)}</strong><small>berdasarkan harga jual produk</small><span className="dashboard-stat-action">Buka katalog <ArrowRight size={13} /></span>
+  </button>
+  <button type="button" className="stat-card dashboard-stat-card" onClick={() => openDashboardProducts('Out of stock')} aria-label="Lihat produk yang stoknya habis">
+    <span className="stat-label"><span>Stok habis</span><span className="stat-icon red"><Activity size={17} /></span></span><strong>{dashboardStats.outOfStockCount}</strong><small><b className="negative">Perlu restock segera</b></small><span className="dashboard-stat-action">Lihat produk habis <ArrowRight size={13} /></span>
+  </button>
+  <button type="button" className="stat-card dashboard-stat-card" onClick={() => openDashboardProducts('Low stock')} aria-label="Lihat produk dengan stok menipis">
+    <span className="stat-label"><span>Stok menipis</span><span className="stat-icon orange"><Activity size={17} /></span></span><strong>{dashboardStats.lowStockCount}</strong><small><b className="negative">Mendekati batas minimum</b></small><span className="dashboard-stat-action">Lihat produk menipis <ArrowRight size={13} /></span>
+  </button>
 </section>
 <div className="dashboard-detail-grid">
   <section className="catalog-panel dashboard-panel">

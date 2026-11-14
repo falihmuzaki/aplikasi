@@ -72,6 +72,9 @@
 @media (max-width: 760px) { .profile-grid { grid-template-columns: 1fr; } }
 .dashboard-actions { display: flex; align-items: center; gap: 9px; }
 .dashboard-actions .secondary-button, .dashboard-actions .primary-button { min-height: 40px; }
+.dashboard-stat-card { width: 100%; min-width: 0; color: var(--ink); text-align: left; cursor: pointer; }
+.dashboard-stat-card:hover { border-color: #b7d7ce; background: var(--surface-soft); box-shadow: 0 9px 24px rgba(34, 69, 70, .1); transform: translateY(-2px); }
+.dashboard-stat-action { display: flex; align-items: center; gap: 5px; margin-top: 11px; color: var(--blue-strong); font-size: 10px; font-weight: 700; }
 .dashboard-detail-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, .85fr); gap: 16px; align-items: stretch; margin-top: 16px; }
 .dashboard-panel { min-width: 0; }
 .dashboard-panel .panel-heading { min-height: 78px; }
