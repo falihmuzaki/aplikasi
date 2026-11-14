@@ -1,10 +1,12 @@
 import 'dotenv/config'
+import { Ratelimit } from '@upstash/ratelimit'
 import cors from 'cors'
 import crypto from 'node:crypto'
 import express from 'express'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Redis } from '@upstash/redis'
 import pg from 'pg'
 import { sendOtpEmail } from './mailer.js'
 
@@ -36,7 +38,23 @@ if (process.env.VERCEL) {
   })
 }
 
-const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || 'lumina-dev-token-secret-change-me'
+const DEVELOPMENT_AUTH_TOKEN_SECRET = 'lumina-dev-token-secret-change-me'
+const configuredAuthTokenSecret = process.env.AUTH_TOKEN_SECRET?.trim()
+const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL)
+if (isProduction && (!configuredAuthTokenSecret || configuredAuthTokenSecret.length < 32 || configuredAuthTokenSecret === DEVELOPMENT_AUTH_TOKEN_SECRET)) {
+  throw new Error('Production requires a unique AUTH_TOKEN_SECRET with at least 32 characters.')
+}
+const AUTH_TOKEN_SECRET = configuredAuthTokenSecret || DEVELOPMENT_AUTH_TOKEN_SECRET
+const redisUrl = process.env.UPSTASH_REDIS_REST_URL?.trim()
+const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim()
+if ((redisUrl && !redisToken) || (!redisUrl && redisToken)) {
+  throw new Error('Configure both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.')
+}
+if (isProduction && (!redisUrl || !redisToken)) {
+  throw new Error('Production requires Upstash Redis REST credentials for shared authentication rate limits.')
+}
+const redis = redisUrl && redisToken ? new Redis({ url: redisUrl, token: redisToken }) : null
+if (!isProduction && !redis) console.warn('Upstash Redis is not configured; authentication rate limits are process-local in development.')
 const TOKEN_TTL_SECONDS = 7 * 24 * 3600
 const backupTables = [
   'users', 'cash_sessions', 'categories', 'suppliers', 'warehouses', 'products', 'customers',
@@ -46,29 +64,52 @@ const backupTables = [
   'stock_transfers', 'stocktakes', 'stocktake_items', 'operating_expenses',
 ]
 
-// In-memory sliding-window rate limiter. No external dependency, consistent with the
-// rest of this server. State lives in a single process; for multi-instance deploys this
-// should move to a shared store (e.g. Redis). Each limiter keeps timestamps per key and
-// drops any older than windowMs before counting.
-function createRateLimiter({ windowMs, max, message }) {
+function createRateLimiter({ windowMs, max, message, prefix }) {
   const hits = new Map()
-  // Periodically evict stale keys so the map doesn't grow unbounded.
-  const sweep = setInterval(() => {
-    const cutoff = Date.now() - windowMs
-    for (const [key, timestamps] of hits) {
-      const fresh = timestamps.filter((time) => time > cutoff)
-      if (fresh.length) hits.set(key, fresh)
-      else hits.delete(key)
-    }
+  const distributedLimiter = redis ? new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(max, `${windowMs / 1000} s`),
+    prefix,
+    timeout: 5000,
+    ephemeralCache: false,
+  }) : null
+  if (!distributedLimiter) {
+    const sweep = setInterval(() => {
+      const cutoff = Date.now() - windowMs
+      for (const [key, timestamps] of hits) {
+        const fresh = timestamps.filter((time) => time > cutoff)
+        if (fresh.length) hits.set(key, fresh)
+        else hits.delete(key)
+      }
+    }, windowMs)
+    sweep.unref?.()
+  }
 
-  }, windowMs)
-  sweep.unref?.()
-
-  const middleware = (request, response, next) => {
+  const middleware = async (request, response, next) => {
     const ip = request.ip || request.socket?.remoteAddress || 'unknown'
     const email = String(request.body?.email || '').trim().toLowerCase()
     const key = `${ip}|${email}`
     const now = Date.now()
+    if (distributedLimiter) {
+      const identifier = crypto.createHash('sha256').update(key).digest('hex')
+      try {
+        const result = await distributedLimiter.limit(identifier)
+        if (result.reason === 'timeout') {
+          console.error('Upstash Redis rate-limit request timed out; rejecting authentication request.')
+          return response.status(503).json({ message: 'Layanan autentikasi sedang tidak tersedia. Coba lagi nanti.' })
+        }
+        if (!result.success) {
+          response.setHeader('Retry-After', String(Math.max(1, Math.ceil((result.reset - Date.now()) / 1000))))
+          return response.status(429).json({ message })
+        }
+        request.clearRateLimit = () => distributedLimiter.resetUsedTokens(identifier)
+        return next()
+      } catch (error) {
+        console.error('Upstash Redis rate-limit request failed; rejecting authentication request.', error)
+        return response.status(503).json({ message: 'Layanan autentikasi sedang tidak tersedia. Coba lagi nanti.' })
+      }
+    }
+
     const timestamps = (hits.get(key) || []).filter((time) => time > now - windowMs)
     if (timestamps.length >= max) {
       const retryAfterSec = Math.ceil((timestamps[0] + windowMs - now) / 1000)
@@ -77,11 +118,18 @@ function createRateLimiter({ windowMs, max, message }) {
     }
     timestamps.push(now)
     hits.set(key, timestamps)
-    // Expose a reset so a successful auth can clear the counter for this key.
     request.clearRateLimit = () => hits.delete(key)
-    next()
+    return next()
   }
   return middleware
+}
+
+async function clearRateLimit(request) {
+  try {
+    await request.clearRateLimit?.()
+  } catch (error) {
+    console.error('Unable to clear the authentication rate-limit counter after successful verification.', error)
+  }
 }
 
 // Login/OTP verification: strict, protects against password and OTP brute force.
@@ -89,6 +137,7 @@ const loginLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 5,
   message: 'Terlalu banyak percobaan. Coba lagi dalam beberapa menit.',
+  prefix: 'ifal-store:rate-limit:login',
 })
 
 app.get('/api/products/lookup/:code', requireAuth, async (request, response, next) => {
@@ -105,6 +154,7 @@ const otpSendLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
   max: 5,
   message: 'Terlalu banyak permintaan kode. Coba lagi nanti.',
+  prefix: 'ifal-store:rate-limit:otp-send',
 })
 
 app.get('/api/product-batches', requireAuth, async (request, response, next) => {
@@ -541,7 +591,7 @@ app.post('/api/auth/login', loginLimiter, async (request, response, next) => {
     const result = await pool.query(`SELECT ${userFields}, password_hash, auth_version FROM users WHERE email=$1 AND is_active=TRUE`, [email])
     const user = result.rows[0]
     if (!user || !verifyPassword(password, user.password_hash)) return response.status(401).json({ message: 'Email atau password tidak sesuai.' })
-    request.clearRateLimit?.()
+    await clearRateLimit(request)
     if (user.mfa_enabled) {
       const code = generateOtp()
       await pool.query("UPDATE users SET login_otp_hash=$1, login_otp_expires_at=NOW() + INTERVAL '10 minutes', updated_at=NOW() WHERE id=$2", [hashOtp(code), user.id])
@@ -562,7 +612,7 @@ app.post('/api/auth/otp/verify', loginLimiter, async (request, response, next) =
     if (!user || !user.login_otp_hash || new Date(user.login_otp_expires_at) <= new Date() || !verifyOtp(otp, user.login_otp_hash)) {
       return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
     }
-    request.clearRateLimit?.()
+    await clearRateLimit(request)
     const loggedIn = await pool.query(`UPDATE users SET login_otp_hash=NULL, login_otp_expires_at=NULL, last_login_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING ${userFields}, auth_version`, [user.id])
     response.json({ user: normalizeUser(loggedIn.rows[0]), token: signToken(user.id, loggedIn.rows[0].auth_version) })
   } catch (error) { next(error) }
@@ -649,7 +699,7 @@ app.post('/api/auth/register/verify', loginLimiter, async (request, response, ne
     if (!user || !user.register_otp_hash || new Date(user.register_otp_expires_at) <= new Date() || !verifyOtp(otp, user.register_otp_hash)) {
       return response.status(400).json({ message: 'Kode OTP tidak valid atau sudah kedaluwarsa.' })
     }
-    request.clearRateLimit?.()
+    await clearRateLimit(request)
     const updated = await pool.query(`UPDATE users SET is_active=TRUE, register_otp_hash=NULL, register_otp_expires_at=NULL, last_login_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING ${userFields}, auth_version`, [user.id])
     response.json({ user: normalizeUser(updated.rows[0]), token: signToken(user.id, updated.rows[0].auth_version) })
   } catch (error) { next(error) }

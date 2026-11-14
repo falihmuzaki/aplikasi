@@ -14,7 +14,9 @@ PORT=3001
 AUTH_TOKEN_SECRET=isi-dengan-nilai-acak-panjang
 ```
 
-`AUTH_TOKEN_SECRET` dipakai untuk menandatangani token login. Di development boleh dikosongkan karena ada fallback di kode, tapi di production wajib diisi nilai acak yang panjang.
+`AUTH_TOKEN_SECRET` dipakai untuk menandatangani token login. Di development boleh dikosongkan karena ada fallback lokal; di production server akan menolak start jika secret tidak diisi dengan nilai unik minimal 32 karakter.
+
+Rate limit login dan OTP menggunakan Upstash Redis dengan jendela geser bersama. Buat database Redis di Upstash, lalu isi `UPSTASH_REDIS_REST_URL` dan `UPSTASH_REDIS_REST_TOKEN`; keduanya boleh kosong untuk development lokal, tetapi wajib di production. Jika Redis tidak tersedia, endpoint autentikasi menolak permintaan dengan `503` agar pembatasan tidak diam-diam dilewati.
 
 Saat server API dijalankan, tabel `products`, `users`, `categories`, `suppliers`, pesanan pembelian, kolom auth/MFA, dan index dibuat otomatis dari `server/schema.sql`.
 
@@ -48,6 +50,7 @@ Deploy frontend dan API sebagai dua proyek Vercel dari repository yang sama, den
 3. Pada proyek API, tambahkan environment variables:
    - `DATABASE_URL`: connection string PostgreSQL Neon. Jangan gunakan prefix `VITE_`.
    - `AUTH_TOKEN_SECRET`: secret acak yang panjang.
+   - `UPSTASH_REDIS_REST_URL` dan `UPSTASH_REDIS_REST_TOKEN`: kredensial REST database Upstash Redis untuk rate limit login/OTP.
 4. Deploy proyek API, lalu atur `VITE_API_URL` pada proyek frontend ke URL API lengkap, termasuk `/api`, misalnya `https://if-store-api.vercel.app/api`. Deploy ulang frontend setelah mengubah variable ini.
 5. Skema database dibuat saat API pertama kali dipanggil. Setelah itu, jalankan `npm run db:admin` satu kali dengan `DATABASE_URL`, `ADMIN_EMAIL`, dan `ADMIN_PASSWORD` tersedia di environment lokal untuk membuat akun admin. Jangan commit nilai rahasia atau file `.env`.
 
