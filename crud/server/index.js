@@ -1322,10 +1322,51 @@ app.get('/api/products/:id/movements', requireAuth, async (request, response, ne
   } catch (error) { next(error) }
 })
 
-app.get('/api/stock-movements', requireAuth, requireAdmin, async (_request, response, next) => {
+app.get('/api/stock-movements', requireAuth, requireAdmin, async (request, response, next) => {
   try {
-    const result = await pool.query('SELECT m.id, m.product_id, m.warehouse_id, w.name AS warehouse_name, m.user_id, m.user_name, m.delta, m.stock_before, m.stock_after, m.reason, m.created_at, p.name AS product_name FROM stock_movements m LEFT JOIN products p ON p.id=m.product_id LEFT JOIN warehouses w ON w.id=m.warehouse_id ORDER BY m.created_at DESC LIMIT 200')
-    response.json(result.rows.map((row) => ({ ...normalizeMovement(row), productName: row.product_name ?? null })))
+    const parseTimestamp = (value) => {
+      if (value === undefined || value === '') return { value: null }
+      if (typeof value !== 'string' || value.length > 40 || !value.includes('T')) return { error: true }
+      const timestamp = new Date(value)
+      return Number.isNaN(timestamp.getTime()) ? { error: true } : { value: timestamp.toISOString() }
+    }
+    const from = parseTimestamp(request.query.from)
+    const to = parseTimestamp(request.query.to)
+    const direction = request.query.direction === undefined ? 'all' : request.query.direction
+    const search = request.query.search === undefined ? '' : request.query.search
+    if (from.error || to.error) return response.status(400).json({ message: 'Tanggal filter harus berupa waktu ISO yang valid.' })
+    if (typeof direction !== 'string' || !['all', 'in', 'out'].includes(direction)) return response.status(400).json({ message: 'Jenis pergerakan tidak valid.' })
+    if (typeof search !== 'string' || search.length > 120) return response.status(400).json({ message: 'Pencarian maksimal 120 karakter.' })
+    if (from.value && to.value && Date.parse(from.value) >= Date.parse(to.value)) return response.status(400).json({ message: 'Rentang tanggal tidak valid.' })
+    const filters = `
+      WHERE ($1::timestamptz IS NULL OR m.created_at >= $1::timestamptz)
+        AND ($2::timestamptz IS NULL OR m.created_at < $2::timestamptz)
+        AND ($3 = 'all' OR ($3 = 'in' AND m.delta > 0) OR ($3 = 'out' AND m.delta < 0))
+        AND ($4 = '' OR POSITION(LOWER($4) IN LOWER(CONCAT_WS(' ', p.name, w.name, m.user_name, m.reason))) > 0)
+    `
+    const values = [from.value, to.value, direction, search.trim()]
+    const totalResult = await pool.query(`
+      SELECT COUNT(*) AS total
+      FROM stock_movements m
+      LEFT JOIN products p ON p.id=m.product_id
+      LEFT JOIN warehouses w ON w.id=m.warehouse_id
+      ${filters}
+    `, values)
+    const result = await pool.query(`
+      SELECT m.id, m.product_id, m.warehouse_id, w.name AS warehouse_name, m.user_id, m.user_name,
+        m.delta, m.stock_before, m.stock_after, m.reason, m.created_at, p.name AS product_name
+      FROM stock_movements m
+      LEFT JOIN products p ON p.id=m.product_id
+      LEFT JOIN warehouses w ON w.id=m.warehouse_id
+      ${filters}
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 200
+    `, values)
+    response.json({
+      items: result.rows.map((row) => ({ ...normalizeMovement(row), productName: row.product_name ?? null })),
+      total: totalResult.rows[0].total,
+      limit: 200,
+    })
   } catch (error) { next(error) }
 })
 

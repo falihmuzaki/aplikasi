@@ -60,32 +60,65 @@ function UsersView({ users, onSave, onDelete }) {
   </>
 }
 
-function StockLogView({ stockLog }) {
+function StockLogView() {
   const [query, setQuery] = useState('')
+  const [search, setSearch] = useState('')
   const [direction, setDirection] = useState('all')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
+  const [movements, setMovements] = useState([])
+  const [total, setTotal] = useState(0)
+  const [settledRequest, setSettledRequest] = useState('')
+  const [error, setError] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
   const invalidRange = Boolean(from && to && from > to)
-  const filteredMovements = useMemo(() => {
-    const search = query.trim().toLowerCase()
-    const dateKey = (value) => {
-      const date = new Date(value)
-      if (Number.isNaN(date.getTime())) return ''
-      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const requestKey = JSON.stringify([search, direction, from, to, refreshKey])
+  const isLoading = !invalidRange && settledRequest !== requestKey
+  const visibleMovements = invalidRange ? [] : movements
+  useEffect(() => {
+    const timeout = setTimeout(() => setSearch(query.trim()), 250)
+    return () => clearTimeout(timeout)
+  }, [query])
+  useEffect(() => {
+    if (invalidRange) return
+    const toTimestamp = (value, addDay = false) => {
+      if (!value) return ''
+      const [year, month, day] = value.split('-').map(Number)
+      return new Date(year, month - 1, day + (addDay ? 1 : 0)).toISOString()
     }
-    return stockLog.filter((movement) => {
-      const matchesQuery = !search || `${movement.productName || ''} ${movement.warehouseName || ''} ${movement.userName || ''} ${movement.reason || ''}`.toLowerCase().includes(search)
-      const movementDate = dateKey(movement.createdAt)
-      const matchesDate = (!from || movementDate >= from) && (!to || movementDate <= to)
-      const matchesDirection = direction === 'all' || (direction === 'in' ? movement.delta > 0 : movement.delta < 0)
-      return matchesQuery && matchesDate && matchesDirection
-    })
-  }, [stockLog, query, direction, from, to])
+    const params = new URLSearchParams({ direction })
+    if (search) params.set('search', search)
+    if (from) params.set('from', toTimestamp(from))
+    if (to) params.set('to', toTimestamp(to, true))
+    let active = true
+    fetch(`${API_URL}/stock-movements?${params}`, { headers: authHeaders() })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.message || 'Gagal memuat pergerakan stok.')
+        if (!Array.isArray(result.items)) throw new Error('Format data pergerakan stok tidak valid.')
+        return result
+      })
+      .then((result) => {
+        if (!active) return
+        setMovements(result.items)
+        setTotal(Number(result.total) || 0)
+        setError('')
+        setSettledRequest(requestKey)
+      })
+      .catch((cause) => {
+        if (!active) return
+        setError(cause.message || 'Gagal memuat pergerakan stok.')
+        setMovements([])
+        setTotal(0)
+        setSettledRequest(requestKey)
+      })
+    return () => { active = false }
+  }, [search, direction, from, to, invalidRange, refreshKey, requestKey])
   const exportCsv = () => {
     const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
     const rows = [
       ['Produk', 'Gudang', 'Perubahan', 'Stok sebelum', 'Stok sesudah', 'Pengguna', 'Alasan', 'Waktu'],
-      ...filteredMovements.map((movement) => [movement.productName, movement.warehouseName, movement.delta, movement.stockBefore, movement.stockAfter, movement.userName, movement.reason, movement.createdAt]),
+      ...movements.map((movement) => [movement.productName, movement.warehouseName, movement.delta, movement.stockBefore, movement.stockAfter, movement.userName, movement.reason, movement.createdAt]),
     ]
     const csv = rows.map((row) => row.map(escape).join(',')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
@@ -97,19 +130,20 @@ function StockLogView({ stockLog }) {
   }
 
   return <>
-    <header className="topbar"><div><p className="breadcrumb">Workspace / <span>Stock log</span></p><h1>Pergerakan stok</h1></div><button className="primary-button" onClick={exportCsv} disabled={!filteredMovements.length || invalidRange}><ArrowDownUp size={16} /> Export CSV</button></header>
-    <section className="welcome-row"><div><p className="muted">Audit trail</p><h2>Riwayat perubahan stok</h2><p className="muted">Mencakup hingga 200 pergerakan terbaru. Atur rentang tanggal untuk mempersempit hasil.</p></div></section>
+    <header className="topbar"><div><p className="breadcrumb">Workspace / <span>Stock log</span></p><h1>Pergerakan stok</h1></div><div className="dashboard-actions"><button className="secondary-button" onClick={() => setRefreshKey((value) => value + 1)} disabled={isLoading}><RefreshCw size={15} /> Muat ulang</button><button className="primary-button" onClick={exportCsv} disabled={!visibleMovements.length || isLoading}><ArrowDownUp size={16} /> Export CSV</button></div></header>
+    <section className="welcome-row"><div><p className="muted">Audit trail</p><h2>Riwayat perubahan stok</h2><p className="muted">Filter mencakup seluruh riwayat; tabel dan ekspor menampilkan maksimal 200 hasil terbaru.</p></div></section>
     <section className="catalog-panel">
-      <div className="panel-heading"><div><h2>Pergerakan stok</h2><p className="muted">Menampilkan {filteredMovements.length} dari {stockLog.length} pergerakan yang dimuat.</p></div></div>
+      <div className="panel-heading"><div><h2>Pergerakan stok</h2><p className="muted">{invalidRange ? 'Rentang tanggal tidak valid.' : isLoading ? 'Memuat data...' : `Menampilkan ${visibleMovements.length} dari ${total} hasil yang cocok.`}</p></div></div>
       <div className="toolbar">
-        <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari produk, gudang, pengguna..." /></label>
+        <label className="search-box"><Search size={17} /><input maxLength="120" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari produk, gudang, pengguna..." /></label>
         <select aria-label="Filter jenis pergerakan" value={direction} onChange={(event) => setDirection(event.target.value)}><option value="all">Semua pergerakan</option><option value="in">Stok masuk</option><option value="out">Stok keluar</option></select>
         <label className="date-filter">Dari<input aria-label="Tanggal mulai" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
         <label className="date-filter">Sampai<input aria-label="Tanggal akhir" type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
         {(query || direction !== 'all' || from || to) && <button className="secondary-button" onClick={() => { setQuery(''); setDirection('all'); setFrom(''); setTo('') }}>Hapus filter</button>}
       </div>
       {invalidRange && <p className="login-error">Tanggal mulai tidak boleh setelah tanggal akhir.</p>}
-      <div className="table-wrap"><table><thead><tr><th>Produk</th><th>Gudang</th><th>Perubahan</th><th>Sebelum → Sesudah</th><th>Pengguna</th><th>Alasan</th><th>Waktu</th></tr></thead><tbody>{filteredMovements.map((movement) => <tr key={movement.id}><td><strong>{movement.productName || '—'}</strong></td><td>{movement.warehouseName || '—'}</td><td><span className={movement.delta >= 0 ? 'delta-up' : 'delta-down'}>{movement.delta >= 0 ? '+' : ''}{movement.delta}</span></td><td>{movement.stockBefore} → {movement.stockAfter}</td><td>{movement.userName || '—'}</td><td>{movement.reason || '—'}</td><td>{movement.createdAt ? new Date(movement.createdAt).toLocaleString('id-ID') : '—'}</td></tr>)}{filteredMovements.length === 0 && <tr><td colSpan="7" className="empty-state">{invalidRange ? 'Rentang tanggal tidak valid.' : 'Tidak ada pergerakan yang cocok dengan filter.'}</td></tr>}</tbody></table></div>
+      {error && <p className="login-error">{error}</p>}
+      <div className="table-wrap"><table><thead><tr><th>Produk</th><th>Gudang</th><th>Perubahan</th><th>Sebelum → Sesudah</th><th>Pengguna</th><th>Alasan</th><th>Waktu</th></tr></thead><tbody>{visibleMovements.map((movement) => <tr key={movement.id}><td><strong>{movement.productName || '—'}</strong></td><td>{movement.warehouseName || '—'}</td><td><span className={movement.delta >= 0 ? 'delta-up' : 'delta-down'}>{movement.delta >= 0 ? '+' : ''}{movement.delta}</span></td><td>{movement.stockBefore} → {movement.stockAfter}</td><td>{movement.userName || '—'}</td><td>{movement.reason || '—'}</td><td>{movement.createdAt ? new Date(movement.createdAt).toLocaleString('id-ID') : '—'}</td></tr>)}{!isLoading && !visibleMovements.length && <tr><td colSpan="7" className="empty-state">{invalidRange ? 'Rentang tanggal tidak valid.' : error ? 'Gagal memuat pergerakan stok.' : 'Tidak ada pergerakan yang cocok dengan filter.'}</td></tr>}{isLoading && <tr><td colSpan="7" className="empty-state">Memuat pergerakan stok...</td></tr>}</tbody></table></div>
     </section>
   </>
 }
@@ -426,7 +460,6 @@ function App() {
   const [archivedProducts, setArchivedProducts] = useState([])
   const [pendingPermanent, setPendingPermanent] = useState(null)
   const [movements, setMovements] = useState([])
-  const [stockLog, setStockLog] = useState([])
   const [bellOpen, setBellOpen] = useState(false)
   const [importRows, setImportRows] = useState(null)
   const [featureView, setFeatureView] = useState('')
@@ -481,10 +514,6 @@ function App() {
     if (!isAuthenticated || activeView !== 'archive') return
     fetch(`${API_URL}/products/archived`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : []).then((data) => { setArchivedProducts(Array.isArray(data) ? data : []); setDatabaseOnline(true) }).catch(() => { setArchivedProducts([]); setDatabaseOnline(false) })
   }, [isAuthenticated, activeView])
-  useEffect(() => {
-    if (!isAuthenticated || !isAdmin || activeView !== 'stock-log') return
-    fetch(`${API_URL}/stock-movements`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : []).then((data) => { setStockLog(Array.isArray(data) ? data : []); setDatabaseOnline(true) }).catch(() => { setStockLog([]); setDatabaseOnline(false) })
-  }, [isAuthenticated, isAdmin, activeView])
   useEffect(() => {
     if (!isAuthenticated) return
     let active = true
@@ -1107,7 +1136,7 @@ function App() {
  : activeView === 'sales' ? <SalesView sales={sales} customers={customers} products={products} onCreate={createSale} onCancel={(id) => updateSale(id, 'cancel')} onReturn={(id, items) => updateSale(id, 'return', items)} onPayment={recordPayment} />
  : activeView === 'suppliers' ? <SuppliersView suppliers={suppliers} canManage={isAdmin} onSave={saveSupplier} onDelete={removeSupplier} />
  : activeView === 'purchases' ? <PurchasesView purchases={purchases} suppliers={suppliers} products={products} onCreate={createPurchase} onReceive={receivePurchase} />
- : isAdmin && activeView === 'stock-log' ? <StockLogView stockLog={stockLog} />
+ : isAdmin && activeView === 'stock-log' ? <StockLogView />
  : isAdmin && activeView === 'users' ? <UsersView users={users} onSave={saveUser} onDelete={removeUser} /> : <>
 <header className="topbar"><div><p className="breadcrumb">Workspace / <span>Products</span></p><h1>Product inventory</h1></div><div className="topbar-actions"><div className="notif-wrap"><button className="notif-bell" title="Peringatan stok & kedaluwarsa" onClick={() => setBellOpen((open) => !open)}><Bell size={18} />{lowOrOut.length + expiryAlerts.length > 0 && <span className="notif-badge">{lowOrOut.length + expiryAlerts.length}</span>}</button>{bellOpen && <div className="notif-panel"><div className="notif-panel-head"><strong>Peringatan inventaris</strong><span className="muted">{lowOrOut.length + expiryAlerts.length} item</span></div>{lowOrOut.length + expiryAlerts.length === 0 ? <p className="notif-empty">Stok aman dan tidak ada batch yang mendekati kedaluwarsa.</p> : <ul className="notif-list">{lowOrOut.map((product) => <li key={`stock-${product.id}`}><div><strong>{product.name}</strong><span className={`status ${product.status.toLowerCase().replace(' ', '-')}`}><span></span>{product.stock} units · {product.status}</span></div><button className="notif-edit" onClick={() => { setBellOpen(false); openEditModal(product) }}><Pencil size={13} /> Edit</button></li>)}{expiryAlerts.map((batch) => <li key={`expiry-${batch.id}`}><div><strong>{batch.productName} · batch {batch.batchNumber}</strong><span className="status low-stock"><span></span>{batch.daysUntilExpiry < 0 ? `Kedaluwarsa ${Math.abs(batch.daysUntilExpiry)} hari lalu` : batch.daysUntilExpiry === 0 ? 'Kedaluwarsa hari ini' : `Kedaluwarsa ${batch.daysUntilExpiry} hari lagi`} · {batch.quantity} unit · {batch.warehouseName}</span></div><button className="notif-edit" onClick={() => { setBellOpen(false); setFeatureView('batches') }}>Lihat</button></li>)}</ul>}</div>}</div><button className="primary-button" onClick={openCreateModal}><CirclePlus size={18} /> Add product</button></div></header><section className="welcome-row"><div><p className="muted">{todayLabel}</p><h2>{greeting}, {firstName} <span className="spark">✦</span></h2><p className="muted">Here is what's happening with your inventory today.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL synced' : 'Local mode'}</div></section>
           <section className="stats-grid"><div className="stat-card"><div className="stat-label"><span>Total products</span><span className="stat-icon blue"><Box size={17} /></span></div><strong>{products.length}</strong><small><b className="positive">{categoryCount}</b> kategori</small></div><div className="stat-card"><div className="stat-label"><span>Inventory value</span><span className="stat-icon green">Rp</span></div><strong>{formatIDR(totalValue)}</strong><small>Rata-rata {formatIDR(avgPrice)} per produk</small></div><div className="stat-card"><div className="stat-label"><span>Active products</span><span className="stat-icon orange"><Check size={17} /></span></div><strong>{activeProducts}</strong><small><b className="positive">{activeProducts}</b> dari {products.length} produk</small></div><div className="stat-card"><div className="stat-label"><span>Needs attention</span><span className="stat-icon red"><Activity size={17} /></span></div><strong>{lowStock}</strong><small><b className="negative">Perlu restock</b> · {lowStock} produk</small></div></section>

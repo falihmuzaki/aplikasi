@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS stock_movements (
 );
 
 CREATE INDEX IF NOT EXISTS stock_movements_product_idx ON stock_movements(product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS stock_movements_created_at_idx ON stock_movements(created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS users (
   id BIGSERIAL PRIMARY KEY,
