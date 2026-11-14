@@ -996,6 +996,20 @@ function App() {
   if (!isAuthenticated) return (
     <div className="login-page">
       <div className="login-decoration"><span className="decoration-grid"></span><span className="decoration-sun"></span></div>
+      <section className="login-hero" aria-labelledby="login-hero-title">
+        <div className="login-hero-brand"><Logo /><span>Ifal Store</span></div>
+        <div className="login-hero-copy">
+          <p className="login-hero-kicker">INVENTORY WORKSPACE</p>
+          <h2 id="login-hero-title">Operasional toko, lebih tertata.</h2>
+          <p>Pantau produk, transaksi, pembelian, dan performa stok dari satu ruang kerja.</p>
+        </div>
+        <div className="login-hero-features">
+          <div><span><Box size={17} /></span><strong>Kontrol stok</strong><small>Pantau ketersediaan dan pergerakan barang.</small></div>
+          <div><span><ReceiptText size={17} /></span><strong>Transaksi terhubung</strong><small>Kelola pembelian, penjualan, dan laporan.</small></div>
+          <div><span><Truck size={17} /></span><strong>Siap multi-gudang</strong><small>Pisahkan stok dan lacak perpindahannya.</small></div>
+        </div>
+        <p className="login-hero-footer">Satu dashboard untuk mengelola aktivitas toko setiap hari.</p>
+      </section>
       <form className="login-card" onSubmit={registerStep === 'form' ? handleRegister : registerStep === 'otp' ? verifyRegisterOtp : resetStep ? resetPasswordWithOtp : otpStep ? handleVerifyOtp : handleLogin}>
         <div className="login-brand"><Logo /><span>Ifal Store</span></div>
         <p className="eyebrow">{registerStep === 'form' ? 'Create account' : registerStep === 'otp' ? 'Email verification' : resetStep ? 'Password reset' : otpStep ? 'MFA verification' : 'Welcome back'}</p>
