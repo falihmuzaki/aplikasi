@@ -70,6 +70,68 @@
 .field-static { margin-bottom: 18px; }.field-static > span { display: block; font-size: 11px; font-weight: 600; margin-bottom: 6px; }.role-static { display: inline-flex; align-items: center; gap: 6px; text-transform: capitalize; color: #394657; font-size: 13px; }.role-static small { text-transform: none; font-weight: 400; }
 .profile-trigger { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }.profile-trigger:hover strong { color: var(--paper, #fff); }.profile-trigger strong, .profile-trigger span { display: block; }.profile-trigger strong { font-size: 12px; margin-bottom: 2px; }.profile-trigger span { font-size: 11px; color: var(--sidebar-ink, #e8f2ef); text-transform: capitalize; }
 @media (max-width: 760px) { .profile-grid { grid-template-columns: 1fr; } }
+.dashboard-actions { display: flex; align-items: center; gap: 9px; }
+.dashboard-actions .secondary-button, .dashboard-actions .primary-button { min-height: 40px; }
+.dashboard-detail-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, .85fr); gap: 16px; align-items: stretch; margin-top: 16px; }
+.dashboard-panel { min-width: 0; }
+.dashboard-panel .panel-heading { min-height: 78px; }
+.dashboard-panel-body { padding: 20px 22px 23px; }
+.health-bar { display: flex; height: 11px; overflow: hidden; border-radius: 999px; background: #edf2f1; }
+.health-segment { min-width: 0; transition: width .2s ease; }
+.health-segment.healthy { background: #3a9a78; }
+.health-segment.low { background: #e0a044; }
+.health-segment.empty { background: #cc6870; }
+.health-legend { display: flex; flex-wrap: wrap; gap: 10px 20px; margin: 13px 0 25px; color: var(--muted); font-size: 11px; }
+.health-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.health-legend strong { color: var(--ink); }
+.health-legend i { width: 8px; height: 8px; border-radius: 50%; }
+.healthy-dot { background: #3a9a78; }
+.low-dot { background: #e0a044; }
+.empty-dot { background: #cc6870; }
+.dashboard-subheading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 15px; }
+.dashboard-subheading h3 { margin: 0 0 4px; font: 700 13px var(--font-display); color: var(--ink); }
+.dashboard-subheading .muted { font-size: 10px; }
+.text-action { border: 0; background: transparent; color: var(--blue-strong); font-size: 11px; font-weight: 700; padding: 6px 0; }
+.text-action:hover { color: var(--navy-strong); text-decoration: underline; }
+.category-breakdown { border-top: 1px solid var(--line); padding-top: 18px; }
+.category-row { display: grid; grid-template-columns: minmax(0, 1fr) 62px; column-gap: 12px; row-gap: 7px; align-items: center; margin: 0 0 15px; }
+.category-row-heading { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.category-row-heading strong { min-width: 0; overflow: hidden; color: #355153; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.category-row-heading span, .category-row > small { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.category-track { height: 7px; overflow: hidden; border-radius: 999px; background: #edf2f1; }
+.category-fill { display: block; height: 100%; border-radius: inherit; }
+.category-color-0 { background: #258a79; }
+.category-color-1 { background: #5b9e8a; }
+.category-color-2 { background: #81a86a; }
+.category-color-3 { background: #d29a4d; }
+.priority-list { list-style: none; padding: 5px 22px 0; margin: 0; }
+.priority-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 59px; border-bottom: 1px solid var(--line); }
+.priority-list li:last-child { border-bottom: 0; }
+.priority-product { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.priority-product > span:last-child { min-width: 0; }
+.priority-product strong, .priority-product small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.priority-product strong { color: #344b4d; font-size: 11px; }
+.priority-product small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.priority-list .status { flex-shrink: 0; }
+.dashboard-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 126px; margin: 0; padding: 20px; color: var(--green); font-size: 11px; }
+.dashboard-shortcuts { border-top: 1px solid var(--line); margin-top: 5px; padding: 16px 22px 20px; }
+.dashboard-shortcuts > .muted { margin-bottom: 10px; font-size: 10px; font-weight: 700; }
+.dashboard-shortcuts > div { display: grid; grid-template-columns: 1fr; gap: 7px; }
+.shortcut-button { display: flex; align-items: center; gap: 8px; min-height: 37px; border: 1px solid #e0e9e7; border-radius: 8px; padding: 8px 10px; color: #426465; background: #fbfdfc; font-size: 11px; font-weight: 600; text-align: left; }
+.shortcut-button:hover { border-color: #b7d7ce; color: var(--blue-strong); background: var(--surface-soft); }
+.shortcut-button svg { color: var(--blue); }
+@media (max-width: 1000px) {
+  .dashboard-detail-grid { grid-template-columns: 1fr; }
+  .dashboard-shortcuts > div { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .dashboard-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .dashboard-actions .secondary-button, .dashboard-actions .primary-button { min-height: 36px; padding: 8px 9px; font-size: 10px; }
+  .dashboard-panel-body { padding: 17px 14px 19px; }
+  .priority-list { padding-inline: 14px; }
+  .dashboard-shortcuts { padding: 14px; }
+  .dashboard-shortcuts > div { grid-template-columns: 1fr; }
+}
 .nav-group { margin-bottom: var(--space-4); }.nav-group:last-child { margin-bottom: 0; }.nav-group-label { color: var(--sidebar-ink, #e8f2ef); font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; padding: 0 var(--space-3); margin: 0 0 var(--space-2); }
 .nav-item .nav-count { min-width: 24px; padding: 3px 7px; border-radius: 999px; background: var(--sidebar-ink, #e8f2ef); color: var(--navy, #173f43); font-size: 11px; font-weight: 700; line-height: 1.2; text-align: center; }
 .nav-item.active .nav-count { background: var(--blue); color: var(--paper, #fff); }

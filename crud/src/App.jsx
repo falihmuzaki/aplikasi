@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Archive, ArrowDownUp, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
+import { Activity, Archive, ArrowDownUp, Bell, Box, Check, ChevronDown, CirclePlus, ClipboardList, CreditCard, FileUp, Image as ImageIcon, KeyRound, LayoutDashboard, LogOut, PackageSearch, Pencil, Printer, ReceiptText, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, ShoppingCart, Tag, Trash2, Truck, Upload, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { code128BarcodeSvg } from './barcode'
 import { BackupView, BatchesView, BarcodeView, CashSessionView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import './App.css'
@@ -335,6 +335,7 @@ function App() {
   const [form, setForm] = useState(blankForm)
   const [databaseOnline, setDatabaseOnline] = useState(false)
   const [stats, setStats] = useState(null)
+  const [statsRefresh, setStatsRefresh] = useState(0)
   const [navigationCounts, setNavigationCounts] = useState(null)
   const [navigationCountsRefresh, setNavigationCountsRefresh] = useState(0)
   const [users, setUsers] = useState([])
@@ -430,8 +431,21 @@ function App() {
   }, [isAuthenticated, navigationCountsRefresh])
   useEffect(() => {
     if (!isAuthenticated || activeView !== 'dashboard') return
-    fetch(`${API_URL}/stats`, { headers: authHeaders() }).then((response) => response.ok ? response.json() : null).then((data) => { if (data) { setStats(data); setDatabaseOnline(true) } }).catch(() => setDatabaseOnline(false))
-  }, [isAuthenticated, activeView])
+    let active = true
+    fetch(`${API_URL}/stats`, { headers: authHeaders() })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.message || 'Gagal memuat ringkasan dashboard.')
+        return result
+      })
+      .then((data) => {
+        if (!active) return
+        setStats(data)
+        setDatabaseOnline(true)
+      })
+      .catch(() => { if (active) setDatabaseOnline(false) })
+    return () => { active = false }
+  }, [isAuthenticated, activeView, statsRefresh])
   const categories = useMemo(() => ['All categories', ...new Set(products.map((product) => product.category))], [products])
   // Form options come from the Categories module when available; fall back to defaults + in-use
   // values when the API is offline so the product form still works in local mode.
@@ -449,6 +463,30 @@ function App() {
   const lowStock = lowOrOut.length
   const categoryCount = new Set(products.map((product) => product.category)).size
   const avgPrice = products.length ? products.reduce((sum, product) => sum + product.price, 0) / products.length : 0
+  const dashboardStats = useMemo(() => {
+    if (stats) return stats
+    const grouped = products.reduce((groups, product) => {
+      const current = groups.get(product.category) || { category: product.category, productCount: 0, stockUnits: 0, value: 0 }
+      current.productCount += 1
+      current.stockUnits += product.stock
+      current.value += product.price * product.stock
+      groups.set(product.category, current)
+      return groups
+    }, new Map())
+    return {
+      totalProducts: products.length,
+      totalStockUnits: products.reduce((sum, product) => sum + product.stock, 0),
+      inventoryValue: totalValue,
+      outOfStockCount: products.filter((product) => getProductStatus(product) === 'Out of stock').length,
+      lowStockCount: products.filter((product) => getProductStatus(product) === 'Low stock').length,
+      categoryCount,
+      byCategory: [...grouped.values()],
+    }
+  }, [stats, products, totalValue, categoryCount])
+  const dashboardCategories = [...(dashboardStats.byCategory || [])].sort((a, b) => b.stockUnits - a.stockUnits)
+  const maxCategoryStock = Math.max(1, ...dashboardCategories.map((item) => item.stockUnits))
+  const inventoryHealthyCount = Math.max(0, dashboardStats.totalProducts - dashboardStats.outOfStockCount - dashboardStats.lowStockCount)
+  const priorityProducts = [...lowOrOut].sort((a, b) => (a.stock - b.stock) || a.name.localeCompare(b.name)).slice(0, 5)
   const now = new Date()
   const todayLabel = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
@@ -565,6 +603,7 @@ function App() {
       response = await fetch(`${API_URL}/products${editingId ? `/${editingId}` : ''}`, { method: editingId ? 'PUT' : 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(product) })
     } catch {
       setProducts((current) => editingId ? current.map((item) => item.id === editingId ? { ...product, id: editingId } : item) : [{ ...product, id: Date.now() }, ...current])
+      setStats(null)
       setDatabaseOnline(false)
       setIsModalOpen(false)
       pushToast('error', 'Server tidak tersedia. Produk disimpan sementara di sesi lokal.')
@@ -576,6 +615,8 @@ function App() {
       return
     }
     setProducts((current) => editingId ? current.map((item) => item.id === editingId ? result : item) : [result, ...current])
+    setStats(null)
+    setStatsRefresh((value) => value + 1)
     setDatabaseOnline(true)
     setIsModalOpen(false)
     pushToast('success', editingId ? 'Produk diperbarui.' : 'Produk ditambahkan.')
@@ -587,6 +628,7 @@ function App() {
       response = await fetch(`${API_URL}/products/${id}`, { method: 'DELETE', headers: authHeaders() })
     } catch {
       setProducts((current) => current.filter((product) => product.id !== id))
+      setStats(null)
       setDatabaseOnline(false)
       setPendingProduct(null)
       pushToast('error', 'Server tidak tersedia. Produk dihapus sementara dari sesi lokal.')
@@ -598,6 +640,8 @@ function App() {
       return
     }
     setProducts((current) => current.filter((product) => product.id !== id))
+    setStats(null)
+    setStatsRefresh((value) => value + 1)
     setDatabaseOnline(true)
     setPendingProduct(null)
     pushToast('success', 'Produk diarsipkan.')
@@ -855,10 +899,50 @@ function App() {
         <div className="sidebar-bottom"><button className="profile-trigger" title="Open profile" onClick={() => setActiveView('profile')}><Avatar user={currentUser} /><div><strong>{currentUser?.name || 'User'}</strong><span>{currentUser?.role || 'User'}</span></div></button><button className="logout-button" title="Log out" onClick={handleLogout}><LogOut size={15} /></button></div>
       </aside>
       <main className="main-content">{activeView === 'dashboard' ? <>
-<header className="topbar"><div><p className="breadcrumb">Workspace / <span>Dashboard</span></p><h1>Analytics dashboard</h1></div><button className="primary-button" onClick={exportAllCsv}><ArrowDownUp size={18} /> Export CSV</button></header>
-<section className="welcome-row"><div><p className="muted">{todayLabel}</p><h2>{greeting}, {firstName} <span className="spark">✦</span></h2><p className="muted">Ringkasan inventaris dan sebaran per kategori.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL synced' : 'Local mode'}</div></section>
-<section className="stats-grid dashboard-grid"><div className="stat-card"><div className="stat-label"><span>Total products</span><span className="stat-icon blue"><Box size={17} /></span></div><strong>{stats?.totalProducts ?? 0}</strong><small><b className="positive">{stats?.categoryCount ?? 0}</b> kategori</small></div><div className="stat-card"><div className="stat-label"><span>Total stock units</span><span className="stat-icon green"><Check size={17} /></span></div><strong>{stats?.totalStockUnits ?? 0}</strong><small>unit di seluruh katalog</small></div><div className="stat-card"><div className="stat-label"><span>Inventory value</span><span className="stat-icon green">Rp</span></div><strong>{formatIDR(stats?.inventoryValue)}</strong><small>nilai persediaan aktif</small></div><div className="stat-card"><div className="stat-label"><span>Out of stock</span><span className="stat-icon red"><Activity size={17} /></span></div><strong>{stats?.outOfStockCount ?? 0}</strong><small><b className="negative">Perlu restock segera</b></small></div><div className="stat-card"><div className="stat-label"><span>Low stock</span><span className="stat-icon orange"><Activity size={17} /></span></div><strong>{stats?.lowStockCount ?? 0}</strong><small><b className="negative">Mendekati batas</b></small></div></section>
-<section className="catalog-panel"><div className="panel-heading"><div><h2>Per-category breakdown</h2><p className="muted">{stats?.byCategory?.length ?? 0} kategori terdaftar.</p></div></div><div className="table-wrap"><table><thead><tr><th>Category</th><th>Products</th><th>Stock units</th><th>Value</th></tr></thead><tbody>{(stats?.byCategory ?? []).map((row) => <tr key={row.category}><td><div className="product-cell"><span className="product-avatar avatar-0"><Tag size={16} /></span><strong>{row.category}</strong></div></td><td>{row.productCount ?? 0} produk</td><td>{row.stockUnits ?? 0} units</td><td className="price">{formatIDR(row.value)}</td></tr>)}{(stats?.byCategory?.length ?? 0) === 0 && <tr><td colSpan="4" className="empty-state">Belum ada data kategori.</td></tr>}</tbody></table></div></section></>
+<header className="topbar"><div><p className="breadcrumb">Workspace / <span>Dashboard</span></p><h1>Dashboard inventaris</h1></div><div className="dashboard-actions"><button className="secondary-button" onClick={() => setStatsRefresh((value) => value + 1)}><RefreshCw size={16} /> Muat ulang</button><button className="primary-button" onClick={exportAllCsv}><ArrowDownUp size={18} /> Export CSV</button></div></header>
+<section className="welcome-row"><div><p className="muted">{todayLabel}</p><h2>{greeting}, {firstName} <span className="spark">✦</span></h2><p className="muted">Ringkasan kondisi stok, nilai inventaris, dan kategori produk.</p></div><div className="sync-status"><span className={`pulse ${databaseOnline ? '' : 'offline'}`}></span> {databaseOnline ? 'PostgreSQL tersinkron' : 'Mode lokal'}</div></section>
+<section className="stats-grid dashboard-grid" aria-label="Ringkasan inventaris">
+  <div className="stat-card"><div className="stat-label"><span>Total produk</span><span className="stat-icon blue"><Box size={17} /></span></div><strong>{dashboardStats.totalProducts}</strong><small><b className="positive">{dashboardStats.categoryCount}</b> kategori</small></div>
+  <div className="stat-card"><div className="stat-label"><span>Total unit stok</span><span className="stat-icon green"><Check size={17} /></span></div><strong>{dashboardStats.totalStockUnits}</strong><small>unit di seluruh katalog</small></div>
+  <div className="stat-card"><div className="stat-label"><span>Nilai inventaris</span><span className="stat-icon green">Rp</span></div><strong>{formatIDR(dashboardStats.inventoryValue)}</strong><small>berdasarkan harga jual produk</small></div>
+  <div className="stat-card"><div className="stat-label"><span>Stok habis</span><span className="stat-icon red"><Activity size={17} /></span></div><strong>{dashboardStats.outOfStockCount}</strong><small><b className="negative">Perlu restock segera</b></small></div>
+  <div className="stat-card"><div className="stat-label"><span>Stok menipis</span><span className="stat-icon orange"><Activity size={17} /></span></div><strong>{dashboardStats.lowStockCount}</strong><small><b className="negative">Mendekati batas minimum</b></small></div>
+</section>
+<div className="dashboard-detail-grid">
+  <section className="catalog-panel dashboard-panel">
+    <div className="panel-heading"><div><h2>Kesehatan inventaris</h2><p className="muted">Kondisi stok dari {dashboardStats.totalProducts} produk aktif.</p></div></div>
+    <div className="dashboard-panel-body">
+      <div className="health-bar" role="img" aria-label={`${inventoryHealthyCount} produk stok aman, ${dashboardStats.lowStockCount} stok menipis, ${dashboardStats.outOfStockCount} stok habis`}>
+        {dashboardStats.totalProducts > 0 && <><span className="health-segment healthy" style={{ width: `${inventoryHealthyCount / dashboardStats.totalProducts * 100}%` }} /><span className="health-segment low" style={{ width: `${dashboardStats.lowStockCount / dashboardStats.totalProducts * 100}%` }} /><span className="health-segment empty" style={{ width: `${dashboardStats.outOfStockCount / dashboardStats.totalProducts * 100}%` }} /></>}
+      </div>
+      <div className="health-legend">
+        <span><i className="healthy-dot" /> Stok aman <strong>{inventoryHealthyCount}</strong></span>
+        <span><i className="low-dot" /> Menipis <strong>{dashboardStats.lowStockCount}</strong></span>
+        <span><i className="empty-dot" /> Habis <strong>{dashboardStats.outOfStockCount}</strong></span>
+      </div>
+      <div className="category-breakdown">
+        <div className="dashboard-subheading"><div><h3>Stok per kategori</h3><p className="muted">{dashboardCategories.length} kategori</p></div><button className="text-action" onClick={() => setActiveView('categories')}>Lihat kategori</button></div>
+        {dashboardCategories.length ? dashboardCategories.map((row, index) => <div className="category-row" key={row.category}>
+          <div className="category-row-heading"><strong>{row.category}</strong><span>{row.stockUnits} unit · {row.productCount} produk</span></div>
+          <div className="category-track"><span className={`category-fill category-color-${index % 4}`} style={{ width: `${row.stockUnits ? Math.max(4, row.stockUnits / maxCategoryStock * 100) : 0}%` }} /></div>
+          <small>{formatIDR(row.value)}</small>
+        </div>) : <p className="empty-state">Belum ada data kategori.</p>}
+      </div>
+    </div>
+  </section>
+  <section className="catalog-panel dashboard-panel">
+    <div className="panel-heading"><div><h2>Perlu perhatian</h2><p className="muted">Produk dengan stok di bawah batas minimum.</p></div><button className="text-action" onClick={() => setActiveView('products')}>Semua produk</button></div>
+    {priorityProducts.length ? <ul className="priority-list">{priorityProducts.map((product) => <li key={product.id}>
+      <div className="priority-product"><span className={`product-avatar avatar-${product.id % 4}`}><PackageSearch size={16} /></span><span><strong>{product.name}</strong><small>{product.category}</small></span></div>
+      <span className={`status ${product.status === 'Out of stock' ? 'out-of-stock' : 'low-stock'}`}><span />{product.status === 'Out of stock' ? 'Habis' : `${product.stock} unit`}</span>
+    </li>)}</ul> : <p className="dashboard-empty"><Check size={17} /> Semua produk memiliki stok yang cukup.</p>}
+    <div className="dashboard-shortcuts"><p className="muted">Akses cepat</p><div>
+      <button className="shortcut-button" onClick={openCreateModal}><CirclePlus size={16} /> Tambah produk</button>
+      <button className="shortcut-button" onClick={() => setActiveView('purchases')}><ShoppingCart size={16} /> Buat pembelian</button>
+      <button className="shortcut-button" onClick={() => setActiveView('sales')}><ReceiptText size={16} /> Buka penjualan</button>
+    </div></div>
+  </section>
+</div></>
  : activeView === 'profile' ? <ProfileView user={currentUser} onSaveProfile={saveProfile} onChangePassword={changePassword} onAvatarError={(message) => pushToast('error', message)} />
  : activeView === 'categories' ? <CategoriesView categories={categoryList} canManage={isAdmin} onSave={saveCategory} onDelete={removeCategory} />
  : activeView === 'archive' ? <>
