@@ -390,13 +390,17 @@ function verifyOtp(code, storedHash) {
   return expectedHash.length === derivedHash.length && crypto.timingSafeEqual(expectedHash, derivedHash)
 }
 
-function requireAuth(request, response, next) {
+async function requireAuth(request, response, next) {
   const header = request.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : ''
   const payload = verifyToken(token)
   if (!payload) return response.status(401).json({ message: 'Sesi tidak valid. Silakan masuk kembali.' })
-  request.userId = payload.uid
-  next()
+  try {
+    const result = await pool.query('SELECT is_active FROM users WHERE id=$1', [payload.uid])
+    if (!result.rows[0]?.is_active) return response.status(401).json({ message: 'Akun tidak aktif atau sesi tidak valid. Silakan masuk kembali.' })
+    request.userId = payload.uid
+    next()
+  } catch (error) { next(error) }
 }
 
 // Approach (a): the token stays {uid, exp} and never carries the role, so the

@@ -116,7 +116,7 @@ Model privilege bawaan berbasis kolom `role` pada tabel `users` (`admin` atau `s
 
 Penegakan di dua lapis:
 
-- **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`.
+- **Backend**: seluruh route `/api/users` (GET, POST, PUT, DELETE) kini butuh `requireAuth` **dan** `requireAdmin`. Role tidak diambil dari token (token hanya memuat `{uid, exp}`) melainkan diverifikasi langsung dari database. User yang bukan admin aktif ditolak dengan `403` dan pesan `Akses ditolak. Hanya admin yang diizinkan.`. `requireAuth` juga memeriksa status akun aktif pada setiap permintaan API, sehingga token milik user yang dinonaktifkan langsung ditolak.
 - **Frontend**: menu dan tampilan **Users** disembunyikan untuk staff, dan aplikasi tidak memanggil `GET /api/users` untuk staff. Staff diarahkan ke tampilan products secara default.
 
 Admin dan staff sama-sama dapat melihat/mengelola informasi produk serta menjalankan alur purchase orders dan sales orders. Staf tidak dapat menetapkan stok awal atau mengubah stok langsung di formulir produk/impor; perubahan stok dari transaksi pembelian/penjualan tetap mengikuti alur transaksi normal. Transfer antar gudang, stok opname yang menerapkan selisih, pembuatan gudang, dan penghapusan permanen produk hanya dapat dilakukan admin. Staf tetap dapat melihat daftar gudang, stok per gudang, dan riwayat stok opname.
