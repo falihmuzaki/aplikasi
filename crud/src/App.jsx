@@ -36,6 +36,7 @@ const Logo = () => (
 )
 const idrFormatter = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 })
 const formatIDR = (value) => idrFormatter.format(Math.round(Number(value) || 0))
+const compactIDRFormatter = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', notation: 'compact', maximumFractionDigits: 1 })
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem('lumina-token') || ''}`, Accept: 'application/json' })
 
 function UsersView({ users, onSave, onDelete }) {
@@ -499,6 +500,10 @@ function App() {
   const maxCategoryStock = Math.max(1, ...dashboardCategories.map((item) => item.stockUnits))
   const inventoryHealthyCount = Math.max(0, dashboardStats.totalProducts - dashboardStats.outOfStockCount - dashboardStats.lowStockCount)
   const priorityProducts = [...lowOrOut].sort((a, b) => (a.stock - b.stock) || a.name.localeCompare(b.name)).slice(0, 5)
+  const dashboardSalesTrend = Array.isArray(dashboardStats.salesTrend) ? dashboardStats.salesTrend : null
+  const dashboardSalesTotal = dashboardSalesTrend?.reduce((sum, day) => sum + day.revenue, 0) || 0
+  const dashboardOrdersTotal = dashboardSalesTrend?.reduce((sum, day) => sum + day.orderCount, 0) || 0
+  const dashboardSalesMax = Math.max(0, ...(dashboardSalesTrend || []).map((day) => day.revenue))
   const openDashboardProducts = (status = 'All status', categoryFilter = 'All categories') => {
     setQuery('')
     setFilter(status)
@@ -975,6 +980,24 @@ function App() {
   <button type="button" className="stat-card dashboard-stat-card" onClick={() => openDashboardProducts('Low stock')} aria-label="Lihat produk dengan stok menipis">
     <span className="stat-label"><span>Stok menipis</span><span className="stat-icon orange"><Activity size={17} /></span></span><strong>{dashboardStats.lowStockCount}</strong><small><b className="negative">Mendekati batas minimum</b></small><span className="dashboard-stat-action">Lihat produk menipis <ArrowRight size={13} /></span>
   </button>
+</section>
+<section className="catalog-panel dashboard-panel dashboard-sales-panel" aria-labelledby="dashboard-sales-title">
+  <div className="panel-heading">
+    <div><h2 id="dashboard-sales-title">Tren penjualan 7 hari</h2><p className="muted">Penjualan bersih setelah diskon, sebelum pajak.</p></div>
+    {dashboardSalesTrend && <div className="dashboard-sales-summary"><strong>{formatIDR(dashboardSalesTotal)}</strong><span>{dashboardOrdersTotal} pesanan</span></div>}
+  </div>
+  {dashboardSalesTrend && dashboardOrdersTotal > 0
+    ? <div className="dashboard-sales-chart" role="list" aria-label="Penjualan harian selama 7 hari">
+      {dashboardSalesTrend.map((day) => {
+        const label = new Date(`${day.date}T00:00:00`).toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric' })
+        return <div className="dashboard-sales-day" key={day.date} role="listitem" aria-label={`${label}: ${formatIDR(day.revenue)}, ${day.orderCount} pesanan`}>
+          <div className="dashboard-sales-track" aria-hidden="true"><span className="dashboard-sales-bar" style={{ height: `${dashboardSalesMax ? day.revenue / dashboardSalesMax * 100 : 0}%` }} /></div>
+          <strong>{label}</strong>
+          <small title={`${formatIDR(day.revenue)} · ${day.orderCount} pesanan`}>{compactIDRFormatter.format(day.revenue)}</small>
+        </div>
+      })}
+    </div>
+    : <p className="dashboard-sales-empty">{dashboardSalesTrend ? 'Belum ada pesanan penjualan dalam 7 hari terakhir.' : 'Tren penjualan tersedia saat koneksi database aktif.'}</p>}
 </section>
 <div className="dashboard-detail-grid">
   <section className="catalog-panel dashboard-panel">

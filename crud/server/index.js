@@ -1077,6 +1077,31 @@ app.get('/api/stats', requireAuth, async (_request, response, next) => {
   try {
     const totals = await pool.query('SELECT COUNT(*)::int AS total_products, COALESCE(SUM(stock), 0)::int AS total_stock_units, COALESCE(SUM(price * stock), 0)::float AS inventory_value, COUNT(*) FILTER (WHERE stock = 0)::int AS out_of_stock_count, COUNT(*) FILTER (WHERE stock > 0 AND stock <= low_stock_threshold)::int AS low_stock_count, COUNT(DISTINCT category)::int AS category_count FROM products WHERE deleted_at IS NULL')
     const byCategory = await pool.query('SELECT category, COUNT(*)::int AS product_count, COALESCE(SUM(stock), 0)::int AS stock_units, COALESCE(SUM(price * stock), 0)::float AS value FROM products WHERE deleted_at IS NULL GROUP BY category ORDER BY category ASC')
+    const salesTrend = await pool.query(`
+      WITH order_totals AS (
+        SELECT so.id, so.created_at::date AS sale_date,
+          COALESCE(SUM((soi.quantity-soi.returned_quantity)*soi.unit_price), 0)::numeric AS subtotal,
+          ROUND(so.discount_rate * 100)::bigint AS discount_basis_points
+        FROM sales_orders so
+        LEFT JOIN sales_order_items soi ON soi.sales_order_id=so.id
+        WHERE so.status <> 'cancelled'
+          AND so.created_at >= CURRENT_DATE - INTERVAL '6 days'
+          AND so.created_at < CURRENT_DATE + INTERVAL '1 day'
+        GROUP BY so.id, so.created_at::date, so.discount_rate
+      ),
+      daily_orders AS (
+        SELECT id, sale_date,
+          (ROUND(subtotal * 100) - FLOOR((ROUND(subtotal * 100) * discount_basis_points + 5000) / 10000)) / 100 AS revenue
+        FROM order_totals
+      )
+      SELECT TO_CHAR(calendar.day, 'YYYY-MM-DD') AS date,
+        COUNT(daily_orders.id)::int AS order_count,
+        COALESCE(SUM(daily_orders.revenue), 0)::float AS revenue
+      FROM generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day') AS calendar(day)
+      LEFT JOIN daily_orders ON daily_orders.sale_date=calendar.day::date
+      GROUP BY calendar.day
+      ORDER BY calendar.day
+    `)
     const row = totals.rows[0]
     response.json({
       totalProducts: row.total_products,
@@ -1086,6 +1111,7 @@ app.get('/api/stats', requireAuth, async (_request, response, next) => {
       lowStockCount: row.low_stock_count,
       categoryCount: row.category_count,
       byCategory: byCategory.rows.map((item) => ({ category: item.category, productCount: item.product_count, stockUnits: item.stock_units, value: item.value })),
+      salesTrend: salesTrend.rows.map((item) => ({ date: item.date, orderCount: item.order_count, revenue: item.revenue })),
     })
   } catch (error) { next(error) }
 })
