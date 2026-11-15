@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, CheckCircle2, LogOut, Minus, Plus, Search, ShoppingBag, Store, Truck, UserRound, X } from 'lucide-react'
 import { API_URL } from './api-url'
+import { CMS_URL } from './cms-url'
 import './Storefront.css'
 
 const formatIDR = (value) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(value) || 0)
@@ -139,7 +140,7 @@ export default function Storefront() {
         setTrackingOrder(order)
         if (window.localStorage.getItem('ifal-store-pending-tracking') === token) {
           window.localStorage.removeItem('ifal-store-pending-tracking')
-          window.history.replaceState(null, '', `${window.location.pathname}?shop=1#track=${encodeURIComponent(token)}`)
+          window.history.replaceState(null, '', `${window.location.pathname}#track=${encodeURIComponent(token)}`)
         }
       })
       .catch((error) => {
@@ -409,12 +410,12 @@ export default function Storefront() {
   return (
     <div className="storefront">
       <header className="storefront-header">
-        <a className="storefront-brand" href="/?shop=1" aria-label="Ifal Store - beranda toko">
+        <a className="storefront-brand" href="/" aria-label="Ifal Store - beranda toko">
           <span className="storefront-brand-mark">IS</span>
           <span><strong>Ifal Store</strong><small>Belanja kebutuhan pilihan Anda</small></span>
         </a>
         <div className="storefront-header-actions">
-          <a className="storefront-admin-link" href="/">Login admin</a>
+          <a className="storefront-admin-link" href={CMS_URL}>Login admin</a>
           <button type="button" className="storefront-account-link" onClick={() => { setCustomerAccountError(''); setCustomerAccountMessage(''); setCustomerAccountOpen(true) }}><UserRound size={15} />{customerAccount ? 'Akun saya' : 'Akun pelanggan'}</button>
           <a className="storefront-track-link" href="#lacak-pesanan">Lacak pesanan</a>
           <a className="storefront-cart-link" href="#keranjang"><ShoppingBag size={18} /><span>Keranjang</span><strong>{cart.reduce((sum, item) => sum + item.quantity, 0)}</strong></a>
@@ -428,7 +429,7 @@ export default function Storefront() {
             <strong>Pesanan berhasil dibuat: {confirmation.orderNumber}</strong>
             <p>Total {formatIDR(confirmation.totalAmount)} · Belum dibayar.</p>
             {confirmation.trackingToken
-              ? <><p>Simpan tautan pelacakan ini untuk melihat perkembangan pesanan.</p><a className="storefront-confirmation-link" href={`/?shop=1#track=${encodeURIComponent(confirmation.trackingToken)}`}>Lacak status pesanan</a></>
+              ? <><p>Simpan tautan pelacakan ini untuk melihat perkembangan pesanan.</p><a className="storefront-confirmation-link" href={`/#track=${encodeURIComponent(confirmation.trackingToken)}`}>Lacak status pesanan</a></>
               : <p>Hubungi admin toko dengan nomor pesanan ini untuk mengetahui perkembangannya.</p>}
           </div>
           <button type="button" aria-label="Tutup pemberitahuan" onClick={() => setConfirmation(null)}><X size={18} /></button>

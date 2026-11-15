@@ -3,6 +3,7 @@ import { Activity, Archive, ArrowDownUp, ArrowRight, Bell, Box, Check, ChevronDo
 import { code128BarcodeSvg } from './barcode'
 import { AuditLogView, BackupView, BatchesView, BarcodeView, CashSessionView, CouponsView, ExpensesView, ReceivablesView, ReportsView, RestockView, StocktakeView, SupplierAccountingView, WarehousesView } from './FeatureViews'
 import { API_URL } from './api-url'
+import { STOREFRONT_URL } from './storefront-url'
 import { parseCsv } from './csv'
 import './App.css'
 
@@ -1160,7 +1161,7 @@ function App() {
           {!registerStep && resetStep && <button type="button" className="secondary-button" onClick={() => setResetStep(false)}>Back to sign in</button>}
         </div>
         <p className="demo-hint">{registerStep === 'form' ? 'Akun baru dibuat sebagai staff dan perlu verifikasi email.' : registerStep === 'otp' || resetStep || otpStep ? 'The code expires in 10 minutes.' : 'Use an active account from the users table.'}</p>
-        {!registerStep && !otpStep && !resetStep && <a className="storefront-login-link" href="/?shop=1">Kunjungi toko online</a>}
+        {!registerStep && !otpStep && !resetStep && <a className="storefront-login-link" href={STOREFRONT_URL}>Kunjungi toko online</a>}
       </form>
     </div>
   )

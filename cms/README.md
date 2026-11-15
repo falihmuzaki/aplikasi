@@ -1,6 +1,12 @@
-# Lumina CRUD
+# Ifal Store CMS
 
-Aplikasi inventory CRUD dengan React, Vite, Express, dan PostgreSQL.
+Aplikasi admin Ifal Store dengan React, Vite, Express, dan PostgreSQL.
+
+## Struktur aplikasi
+
+- `frontend/`: etalase publik untuk pelanggan.
+- `cms/`: dashboard admin dan service Express yang saat ini menyediakan endpoint toko.
+- `api/`: aplikasi Laravel terpisah; etalase publik memakai service Express yang dikonfigurasi melalui `VITE_API_URL`.
 
 ## Setup PostgreSQL
 
@@ -34,28 +40,37 @@ Terminal kedua:
 npm run dev
 ```
 
-Buka http://localhost:5173 dan login dengan akun demo:
+Buka http://localhost:5173 untuk login admin dengan akun demo:
 
 - Email: `admin@lumina.test`
 - Password: `lumina123`
+
+Jalankan etalase publik dari terminal ketiga:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Buka http://localhost:5174 untuk melihat toko online. Secara default, etalase memakai API di `http://localhost:3001/api`.
 
 Jika PostgreSQL belum aktif, dashboard tetap berjalan dalam local mode. Jika API aktif, operasi tambah, edit, hapus, dan pemuatan data menggunakan PostgreSQL.
 
 ## Deploy ke Vercel dengan PostgreSQL Neon
 
-Deploy frontend dan API sebagai dua proyek Vercel dari repository yang sama, dengan root directory `crud`.
+Deploy `frontend/` sebagai aplikasi Vite terpisah. Atur `VITE_API_URL` ke URL publik service Express (termasuk `/api`) dan `VITE_CMS_URL` ke URL dashboard admin. Deploy dashboard CMS dari `cms/` dan atur `VITE_STOREFRONT_URL` ke URL etalase publik. Endpoint pesanan online dan inventaris saat ini disediakan oleh Express di `cms/server`; folder `api/` berisi aplikasi Laravel terpisah.
 
-1. Proyek frontend: pilih preset Vite, install command `npm ci`, build command `npm run build`, dan output directory `dist`.
-2. Proyek API: pilih preset Express. Entry point `index.js` meneruskan request ke API Express.
-3. Pada proyek API, tambahkan environment variables:
-   - `DATABASE_URL`: connection string PostgreSQL Neon. Jangan gunakan prefix `VITE_`.
-   - `AUTH_TOKEN_SECRET`: secret acak yang panjang.
-   - `UPSTASH_REDIS_REST_URL` dan `UPSTASH_REDIS_REST_TOKEN`: kredensial REST database Upstash Redis untuk rate limit login/OTP.
-   - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, dan `CRON_SECRET` untuk backup terjadwal. Buat token R2 dengan akses hanya ke bucket backup.
-   - `MIDTRANS_SERVER_KEY`, `MIDTRANS_IS_PRODUCTION=false`, `MIDTRANS_NOTIFICATION_URL`, dan `STOREFRONT_URL` untuk pembayaran. Atur **Payment Notification URL** pada Midtrans Dashboard ke `MIDTRANS_NOTIFICATION_URL` dan **Finish Redirect URL** ke URL storefront publik.
-   - `BITESHIP_API_KEY`, `BITESHIP_COURIERS`, `BITESHIP_ORIGIN_CONTACT_NAME`, `BITESHIP_ORIGIN_CONTACT_PHONE`, dan `BITESHIP_ORIGIN_ADDRESS` untuk tarif dan pembuatan pengiriman. Kode pos asal default `17610`; atur nomor resi tracking lewat tombol di menu Sales. Secret Biteship hanya disimpan di environment proyek API.
-4. Deploy proyek API, lalu atur `VITE_API_URL` pada proyek frontend ke URL API lengkap, termasuk `/api`, misalnya `https://if-store-api.vercel.app/api`. Deploy ulang frontend setelah mengubah variable ini.
-5. Skema database dibuat saat API pertama kali dipanggil. Setelah itu, jalankan `npm run db:admin` satu kali dengan `DATABASE_URL`, `ADMIN_EMAIL`, dan `ADMIN_PASSWORD` tersedia di environment lokal untuk membuat akun admin. Jangan commit nilai rahasia atau file `.env`.
+Pada proyek API Express, tambahkan environment variables:
+
+- `DATABASE_URL`: connection string PostgreSQL Neon. Jangan gunakan prefix `VITE_`.
+- `AUTH_TOKEN_SECRET`: secret acak yang panjang.
+- `UPSTASH_REDIS_REST_URL` dan `UPSTASH_REDIS_REST_TOKEN`: kredensial REST database Upstash Redis untuk rate limit login/OTP.
+- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, dan `CRON_SECRET` untuk backup terjadwal. Buat token R2 dengan akses hanya ke bucket backup.
+- `MIDTRANS_SERVER_KEY`, `MIDTRANS_IS_PRODUCTION=false`, `MIDTRANS_NOTIFICATION_URL`, dan `STOREFRONT_URL` untuk pembayaran. Atur **Payment Notification URL** pada Midtrans Dashboard ke `MIDTRANS_NOTIFICATION_URL` dan **Finish Redirect URL** ke URL storefront publik.
+- `BITESHIP_API_KEY`, `BITESHIP_COURIERS`, `BITESHIP_ORIGIN_CONTACT_NAME`, `BITESHIP_ORIGIN_CONTACT_PHONE`, dan `BITESHIP_ORIGIN_ADDRESS` untuk tarif dan pembuatan pengiriman. Kode pos asal default `17610`; atur nomor resi tracking lewat tombol di menu Sales. Secret Biteship hanya disimpan di environment proyek API.
+
+Skema database dibuat saat API pertama kali dipanggil. Setelah itu, jalankan `npm run db:admin` satu kali dari `cms/` dengan `DATABASE_URL`, `ADMIN_EMAIL`, dan `ADMIN_PASSWORD` tersedia di environment lokal untuk membuat akun admin. Jangan commit nilai rahasia atau file `.env`.
 
 Untuk API lokal, frontend tetap memakai `http://localhost:3001/api`. Jika API di-host pada domain terpisah, atur `VITE_API_URL` ke URL API lengkap, termasuk `/api`.
 
