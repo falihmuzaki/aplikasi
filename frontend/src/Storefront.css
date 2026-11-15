@@ -449,3 +449,15 @@
 @media (prefers-reduced-motion: reduce) {
   .storefront-product-card, .storefront-product-info button, .storefront-checkout-button { transition: none; }
 }
+
+@media (max-width: 420px) {
+  .storefront-header { padding-inline: 12px; }
+  .storefront-header-actions { gap: 8px; }
+  .storefront-admin-link { display: none; }
+  .storefront-account-link {
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    font-size: 0;
+  }
+}

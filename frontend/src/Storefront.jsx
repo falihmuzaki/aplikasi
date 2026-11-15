@@ -9,9 +9,32 @@ const initialCheckout = { customerName: '', customerEmail: '', customerPhone: ''
 const fulfillmentLabels = { pending: 'Menunggu diproses', processing: 'Sedang diproses', ready_for_pickup: 'Siap diambil', shipped: 'Dalam pengiriman', completed: 'Selesai', cancelled: 'Dibatalkan' }
 const paymentStatusLabels = { unpaid: 'Belum dibayar', partial: 'Dibayar sebagian', paid: 'Lunas', refund_due: 'Menunggu refund', partially_refunded: 'Refund sebagian', refunded: 'Dana dikembalikan' }
 const gatewayStatusLabels = { pending: 'Menunggu pembayaran Midtrans', expire: 'Pembayaran kedaluwarsa', cancel: 'Pembayaran dibatalkan', deny: 'Pembayaran ditolak', settlement: 'Pembayaran berhasil', capture: 'Pembayaran diproses' }
+const cartStorageKey = 'ifal-store-cart'
 const trackingSteps = {
   pickup: ['pending', 'processing', 'ready_for_pickup', 'completed'],
   delivery: ['pending', 'processing', 'shipped', 'completed'],
+}
+
+function loadSavedCart() {
+  const savedCart = window.localStorage.getItem(cartStorageKey)
+  if (!savedCart) return []
+
+  let entries
+  try {
+    entries = JSON.parse(savedCart)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(entries)) return []
+
+  return entries.filter((entry) => (
+    entry
+    && Number.isSafeInteger(entry.productId)
+    && entry.productId > 0
+    && Number.isSafeInteger(entry.quantity)
+    && entry.quantity > 0
+    && entry.quantity <= 10000
+  ))
 }
 
 async function requestTrackingOrder(token, signal) {
@@ -39,7 +62,7 @@ export default function Storefront() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('Semua')
   const [selectedVariants, setSelectedVariants] = useState({})
-  const [cart, setCart] = useState([])
+  const [cart, setCart] = useState(loadSavedCart)
   const [checkout, setCheckout] = useState(initialCheckout)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -63,6 +86,10 @@ export default function Storefront() {
   const [trackingOrder, setTrackingOrder] = useState(null)
   const [trackingLoading, setTrackingLoading] = useState(Boolean(initialTrackingToken))
   const [trackingError, setTrackingError] = useState('')
+
+  useEffect(() => {
+    window.localStorage.setItem(cartStorageKey, JSON.stringify(cart))
+  }, [cart])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -208,7 +235,7 @@ export default function Storefront() {
     setShippingQuoteError('')
     setCheckout((current) => ({ ...current, shippingOption: null }))
     setCart((current) => current
-      .map((item) => item.productId === productId ? { ...item, quantity: item.quantity + amount } : item)
+      .map((item) => item.productId === productId ? { ...item, quantity: Math.min(10000, item.quantity + amount) } : item)
       .filter((item) => item.quantity > 0))
   }
   const addToCart = (product) => {
@@ -416,9 +443,9 @@ export default function Storefront() {
         </a>
         <div className="storefront-header-actions">
           <a className="storefront-admin-link" href={CMS_URL}>Login admin</a>
-          <button type="button" className="storefront-account-link" onClick={() => { setCustomerAccountError(''); setCustomerAccountMessage(''); setCustomerAccountOpen(true) }}><UserRound size={15} />{customerAccount ? 'Akun saya' : 'Akun pelanggan'}</button>
+          <button type="button" className="storefront-account-link" aria-label={customerAccount ? 'Akun saya' : 'Akun pelanggan'} onClick={() => { setCustomerAccountError(''); setCustomerAccountMessage(''); setCustomerAccountOpen(true) }}><UserRound size={15} />{customerAccount ? 'Akun saya' : 'Akun pelanggan'}</button>
           <a className="storefront-track-link" href="#lacak-pesanan">Lacak pesanan</a>
-          <a className="storefront-cart-link" href="#keranjang"><ShoppingBag size={18} /><span>Keranjang</span><strong>{cart.reduce((sum, item) => sum + item.quantity, 0)}</strong></a>
+          <a className="storefront-cart-link" href="#keranjang" aria-label={`Keranjang, ${cart.reduce((sum, item) => sum + item.quantity, 0)} produk`}><ShoppingBag size={18} /><span>Keranjang</span><strong>{cart.reduce((sum, item) => sum + item.quantity, 0)}</strong></a>
         </div>
       </header>
 
