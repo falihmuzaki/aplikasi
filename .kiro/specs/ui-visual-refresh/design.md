@@ -2,7 +2,7 @@
 
 ## Overview
 
-Fitur `ui-visual-refresh` adalah **refactor CSS murni presentasional** pada aplikasi inventory/POS Ifal Store. Seluruh pekerjaan terbatas pada satu berkas, yaitu `crud/src/App.css` (selanjutnya disebut *Stylesheet*). Tujuannya memberi tampilan modern SaaS yang bersih dan konsisten melalui konsolidasi token desain, penyeragaman tipografi/spacing, perapihan komponen inti, penegasan state interaktif, dan pemenuhan kontras WCAG — **tanpa mengubah perilaku, layout fungsional, maupun markup**.
+Fitur `ui-visual-refresh` adalah **refactor CSS murni presentasional** pada aplikasi inventory/POS IF Store. Seluruh pekerjaan terbatas pada satu berkas, yaitu `crud/src/App.css` (selanjutnya disebut *Stylesheet*). Tujuannya memberi tampilan modern SaaS yang bersih dan konsisten melalui konsolidasi token desain, penyeragaman tipografi/spacing, perapihan komponen inti, penegasan state interaktif, dan pemenuhan kontras WCAG — **tanpa mengubah perilaku, layout fungsional, maupun markup**.
 
 Pendekatan inti:
 

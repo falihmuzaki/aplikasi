@@ -1,4 +1,4 @@
-name: Daily Ifal Store backup
+name: Daily IF Store backup
 
 on:
   schedule:

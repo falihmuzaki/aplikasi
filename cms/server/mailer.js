@@ -25,7 +25,7 @@ function readMailConfig() {
   const port = Number(process.env.MAIL_PORT || 587)
   const encryption = String(process.env.MAIL_ENCRYPTION || '').trim().toLowerCase()
   const fromAddress = String(process.env.MAIL_FROM_ADDRESS || username).trim()
-  const fromName = String(process.env.MAIL_FROM_NAME || 'Ifal Store').trim()
+  const fromName = String(process.env.MAIL_FROM_NAME || 'IF Store').trim()
   // secure=true untuk SMTPS (port 465 / MAIL_ENCRYPTION=ssl); selain itu
   // secure=false dan nodemailer memakai STARTTLS (umumnya port 587/tls).
   const secure = port === 465 || encryption === 'ssl'
@@ -69,23 +69,23 @@ function escapeHtml(value) {
 export function createCustomerStorefrontMessage({ subject, title, lines, trackingUrl }) {
   const safeLines = lines.map((line) => String(line))
   const link = /^https?:\/\//i.test(String(trackingUrl || '')) ? String(trackingUrl) : ''
-  const text = [title, '', ...safeLines, ...(link ? ['', `Lacak pesanan: ${link}`] : []), '', '— Ifal Store'].join('\n')
+  const text = [title, '', ...safeLines, ...(link ? ['', `Lacak pesanan: ${link}`] : []), '', '— IF Store'].join('\n')
   const html = [
     `<h2>${escapeHtml(title)}</h2>`,
     ...safeLines.map((line) => `<p>${escapeHtml(line)}</p>`),
     link ? `<p><a href="${escapeHtml(link)}">Lacak status pesanan</a></p>` : '',
-    '<p>— Ifal Store</p>',
+    '<p>— IF Store</p>',
   ].join('')
   return { subject, text, html }
 }
 
 function buildMessage({ code, purpose }) {
   const intro = purpose === 'reset'
-    ? 'Berikut kode OTP untuk mereset password akun Ifal Store Anda.'
+    ? 'Berikut kode OTP untuk mereset password akun IF Store Anda.'
     : purpose === 'register'
-      ? 'Berikut kode OTP untuk memverifikasi email akun Ifal Store Anda.'
-      : 'Berikut kode OTP untuk menyelesaikan proses masuk ke akun Ifal Store Anda.'
-  const subject = 'Kode OTP Ifal Store'
+      ? 'Berikut kode OTP untuk memverifikasi email akun IF Store Anda.'
+      : 'Berikut kode OTP untuk menyelesaikan proses masuk ke akun IF Store Anda.'
+  const subject = 'Kode OTP IF Store'
   const text = [
     intro,
     '',
@@ -94,14 +94,14 @@ function buildMessage({ code, purpose }) {
     'Kode berlaku selama 10 menit dan hanya bisa dipakai sekali.',
     'Abaikan email ini jika Anda tidak meminta kode tersebut.',
     '',
-    '— Ifal Store',
+    '— IF Store',
   ].join('\n')
   const html = [
     `<p>${intro}</p>`,
     `<p style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>`,
     '<p>Kode berlaku selama 10 menit dan hanya bisa dipakai sekali.</p>',
     '<p>Abaikan email ini jika Anda tidak meminta kode tersebut.</p>',
-    '<p style="color:#888">— Ifal Store</p>',
+    '<p style="color:#888">— IF Store</p>',
   ].join('')
   return { subject, text, html }
 }

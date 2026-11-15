@@ -3152,7 +3152,7 @@ app.post('/api/storefront/orders', storefrontOrderLimiter, async (request, respo
           id: 'ifal-store-products',
           price: Number(discountedSubtotalCents / 100n),
           quantity: 1,
-          name: 'Produk Ifal Store',
+          name: 'Produk IF Store',
         })
       }
     }

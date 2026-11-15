@@ -1,6 +1,6 @@
-# Ifal Store Frontend
+# IF Store Frontend
 
-Etalase publik Ifal Store. Aplikasi ini terpisah dari CMS dan memakai API yang sama.
+Etalase publik IF Store. Aplikasi ini terpisah dari CMS dan memakai API yang sama.
 
 ## Menjalankan lokal
 

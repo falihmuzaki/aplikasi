@@ -1,6 +1,6 @@
 # Implementation Plan — Public self-registration with email OTP verification
 
-Scope: add a public "Daftar" (register) flow to the Lumina / Ifal Store inventory app.
+Scope: add a public "Daftar" (register) flow to the Lumina / IF Store inventory app.
 New accounts are ALWAYS role `staff`, created inactive (`is_active=FALSE`), and only
 activated after email-OTP verification. All work happens in the worktree
 `c:\Users\Falih\Videos\aplikasi\.worktrees\self-register\crud`.
@@ -49,7 +49,7 @@ backend syntax via `node --check`, frontend via `npm run lint` (oxlint) and
 - [ ] 2. Extend the mailer to support a 'register' purpose.
       In `buildMessage({ code, purpose })`, add a branch so `purpose === 'register'` uses a
       verification-oriented intro (e.g. "Berikut kode OTP untuk memverifikasi email akun
-      Ifal Store Anda.") while keeping the existing 'login' / 'reset' text. Add a matching
+      IF Store Anda.") while keeping the existing 'login' / 'reset' text. Add a matching
       `[DEV OTP]` line in `logDevOtp` for the register purpose (e.g. "Kode verifikasi
       pendaftaran untuk ${to}: ${code}"). Do not change the SMTP config, transporter, or the
       enumeration-safe error handling. Match 2-space indent, no semicolons.

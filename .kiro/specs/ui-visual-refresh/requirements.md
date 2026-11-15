@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Fitur ui-visual-refresh melakukan refresh visual menyeluruh ("redesign template UI/UX") pada aplikasi inventory/POS Ifal Store. Tujuannya adalah memperbarui tampilan menjadi gaya modern SaaS yang bersih dan rapi melalui perbaikan palet warna, tipografi, spacing, serta penampilan komponen inti (sidebar, topbar, kartu statistik, tabel, panel katalog, modal, tombol, badge, toast, halaman login, panel notifikasi, feature launcher/overlay, dan invoice).
+Fitur ui-visual-refresh melakukan refresh visual menyeluruh ("redesign template UI/UX") pada aplikasi inventory/POS IF Store. Tujuannya adalah memperbarui tampilan menjadi gaya modern SaaS yang bersih dan rapi melalui perbaikan palet warna, tipografi, spacing, serta penampilan komponen inti (sidebar, topbar, kartu statistik, tabel, panel katalog, modal, tombol, badge, toast, halaman login, panel notifikasi, feature launcher/overlay, dan invoice).
 
 Batasan mutlak: seluruh perubahan hanya dilakukan pada lapisan styling di file `crud/src/App.css`. Struktur JSX pada `crud/src/App.jsx` dan `crud/src/FeatureViews.jsx` tidak boleh diubah, tidak ada dependency baru yang ditambahkan (tanpa Tailwind atau framework CSS lain), dan seluruh fitur, layout, perilaku, serta hierarki navigasi aplikasi harus tetap berfungsi persis seperti sekarang. Refresh ini bersifat murni presentasional dan tidak boleh mengubah perilaku fungsional aplikasi.
 

@@ -280,7 +280,7 @@ export function BackupView({ onRestored }) {
     setBusy(true); setError(''); setStatus('')
     try {
       const backup = JSON.parse(await file.text())
-      if (backup?.format !== 'ifal-store-backup' || ![1, 2, 3].includes(backup.version) || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) throw new Error('File bukan backup Ifal Store yang didukung.')
+      if (backup?.format !== 'ifal-store-backup' || ![1, 2, 3].includes(backup.version) || !backup.tables || typeof backup.tables !== 'object' || Array.isArray(backup.tables)) throw new Error('File bukan backup IF Store yang didukung.')
       const tables = backup.tables
       if (Object.keys(tables).some((table) => !backupTables.includes(table))) throw new Error('Backup berisi tabel yang tidak dikenal.')
       const optionalTables = [
@@ -325,7 +325,7 @@ export function BackupView({ onRestored }) {
       {scheduleError && <p className="login-error">{scheduleError}</p>}
       {scheduled && <div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Status</th><th>Objek R2</th><th>Ukuran</th><th>Waktu selesai</th></tr></thead><tbody>{scheduled.runs.map((run) => <tr key={run.date}><td>{new Date(run.date).toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta' })}</td><td>{run.status === 'completed' ? 'Berhasil' : run.status === 'failed' ? `Gagal (${run.errorCode || 'unknown'})` : 'Berjalan'}</td><td>{run.objectKey}</td><td>{run.sizeBytes === null ? '—' : `${(run.sizeBytes / 1024 / 1024).toFixed(2)} MB`}</td><td>{run.completedAt ? new Date(run.completedAt).toLocaleString('id-ID') : '—'}</td></tr>)}{!scheduled.runs.length && <tr><td colSpan="5" className="empty-state">Belum ada backup terjadwal.</td></tr>}</tbody></table></div>}
     </section>
-    <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Pulihkan dari backup</h2><p className="muted">Pilih file JSON backup Ifal Store. Pemulihan mengganti seluruh data saat ini dan Anda akan diminta masuk kembali.</p></div></div><div className="toolbar"><label className="secondary-button backup-upload"><Upload size={16} /> Pilih file backup<input type="file" accept="application/json,.json" onChange={restoreBackup} disabled={busy} /></label></div></section>
+    <section className="catalog-panel backup-panel"><div className="panel-heading"><div><h2>Pulihkan dari backup</h2><p className="muted">Pilih file JSON backup IF Store. Pemulihan mengganti seluruh data saat ini dan Anda akan diminta masuk kembali.</p></div></div><div className="toolbar"><label className="secondary-button backup-upload"><Upload size={16} /> Pilih file backup<input type="file" accept="application/json,.json" onChange={restoreBackup} disabled={busy} /></label></div></section>
     {error && !pendingRestore && <p className="login-error">{error}</p>}{status && <p className="muted backup-status">{status}</p>}
     <section className="catalog-panel backup-warning"><strong>Perhatian keamanan & pemulihan</strong><p>File backup berisi data usaha dan hash kata sandi akun (OTP sementara tidak disimpan). Batasi akses file dan jangan kirim melalui kanal publik. Proses pemulihan tidak dapat dibatalkan; buat backup terbaru sebelum menjalankannya.</p></section>
     {pendingRestore && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && cancelRestore()}><section className="modal backup-preview" role="dialog" aria-modal="true" aria-labelledby="backup-preview-title" aria-describedby="backup-preview-description">

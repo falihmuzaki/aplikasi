@@ -437,9 +437,9 @@ export default function Storefront() {
   return (
     <div className="storefront">
       <header className="storefront-header">
-        <a className="storefront-brand" href="/" aria-label="Ifal Store - beranda toko">
+        <a className="storefront-brand" href="/" aria-label="IF Store - beranda toko">
           <span className="storefront-brand-mark">IS</span>
-          <span><strong>Ifal Store</strong><small>Belanja kebutuhan pilihan Anda</small></span>
+          <span><strong>IF Store</strong><small>Belanja kebutuhan pilihan Anda</small></span>
         </a>
         <div className="storefront-header-actions">
           <a className="storefront-admin-link" href={CMS_URL}>Login admin</a>
@@ -535,7 +535,7 @@ export default function Storefront() {
           </aside>
         </div>
 
-        <footer className="storefront-footer"><span>Ifal Store</span><span>{paymentEnabled ? 'Pembayaran online tersedia melalui Midtrans.' : 'Pembayaran dicatat manual setelah konfirmasi admin.'}</span></footer>
+        <footer className="storefront-footer"><span>IF Store</span><span>{paymentEnabled ? 'Pembayaran online tersedia melalui Midtrans.' : 'Pembayaran dicatat manual setelah konfirmasi admin.'}</span></footer>
       </main>
 
       {customerAccountOpen && <div className="storefront-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCustomerAccountOpen(false)}>

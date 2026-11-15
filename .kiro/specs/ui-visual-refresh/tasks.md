@@ -2,7 +2,7 @@
 
 ## Overview
 
-Rencana implementasi ini mengubah tampilan aplikasi inventory/POS Ifal Store menjadi gaya modern SaaS yang bersih dan konsisten. **Seluruh pekerjaan hanya menyentuh berkas `crud/src/App.css` (Stylesheet).** Markup pada `crud/src/App.jsx` dan `crud/src/FeatureViews.jsx` TIDAK boleh diubah (byte-identik), dan tidak ada dependency styling baru yang ditambahkan.
+Rencana implementasi ini mengubah tampilan aplikasi inventory/POS IF Store menjadi gaya modern SaaS yang bersih dan konsisten. **Seluruh pekerjaan hanya menyentuh berkas `crud/src/App.css` (Stylesheet).** Markup pada `crud/src/App.jsx` dan `crud/src/FeatureViews.jsx` TIDAK boleh diubah (byte-identik), dan tidak ada dependency styling baru yang ditambahkan.
 
 Pendekatan bersifat inkremental dari bawah ke atas kaskade: mulai dari fondasi token (`:root`), lapisan tipografi dasar, lalu penggantian literal warna menjadi token, perapihan komponen inti satu per satu, state interaktif, kontras, responsivitas, dan print-safety. Setiap tugas membangun di atas tugas sebelumnya dan ditutup dengan verifikasi build/lint serta pemeriksaan diff agar tidak ada regresi.
 

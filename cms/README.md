@@ -1,6 +1,6 @@
-# Ifal Store CMS
+# IF Store CMS
 
-Aplikasi admin Ifal Store dengan React, Vite, Express, dan PostgreSQL.
+Aplikasi admin IF Store dengan React, Vite, Express, dan PostgreSQL.
 
 ## Struktur aplikasi
 
@@ -91,7 +91,7 @@ Tabel `suppliers`, `purchase_orders`, `purchase_order_items`, `customers`, `sale
 
 Menu **Customers** menyimpan nama dan kontak pelanggan. Admin dapat menambah, mengubah, dan menghapus data; staff dapat melihatnya. Menu **Sales** digunakan admin maupun staff untuk membuat pesanan atas nama pelanggan terdaftar. Harga jual disalin dari harga produk saat transaksi, stok diperiksa dan dikurangi saat pesanan disimpan, serta setiap pengurangan masuk ke **Stock log**.
 
-Toko online publik tersedia di URL frontend dengan query `?shop=1` (contoh `https://ifal-store.vercel.app/?shop=1`). Pelanggan dapat melihat katalog, mencari produk, membuat keranjang, lalu checkout sebagai tamu untuk pengambilan di toko atau pengiriman. Pesanan online memeriksa dan mengurangi stok dalam transaksi database. Jika Midtrans dikonfigurasi, pelanggan dapat membayar melalui Snap; jika belum, pembayaran perlu diverifikasi dan dicatat admin secara manual melalui menu **Sales**. Jika Biteship dikonfigurasi, pelanggan memasukkan kode pos dan memilih layanan; ongkir diverifikasi ulang server dan masuk ke total checkout. Admin dapat membuat pengiriman Biteship setelah pembayaran lunas dan memperbarui status kurir dari menu **Sales**. Tanpa konfigurasi Biteship, ongkir tetap perlu dikonfirmasi terpisah.
+Toko online publik tersedia di URL frontend yang dikonfigurasi dengan query `?shop=1`. Pelanggan dapat melihat katalog, mencari produk, membuat keranjang, lalu checkout sebagai tamu untuk pengambilan di toko atau pengiriman. Pesanan online memeriksa dan mengurangi stok dalam transaksi database. Jika Midtrans dikonfigurasi, pelanggan dapat membayar melalui Snap; jika belum, pembayaran perlu diverifikasi dan dicatat admin secara manual melalui menu **Sales**. Jika Biteship dikonfigurasi, pelanggan memasukkan kode pos dan memilih layanan; ongkir diverifikasi ulang server dan masuk ke total checkout. Admin dapat membuat pengiriman Biteship setelah pembayaran lunas dan memperbarui status kurir dari menu **Sales**. Tanpa konfigurasi Biteship, ongkir tetap perlu dikonfirmasi terpisah.
 
 Pelanggan dapat masuk menggunakan kode OTP email dari tombol **Akun pelanggan** untuk melihat hingga 100 pesanan online yang dibuat dengan alamat email tersebut. Sesi berlaku 30 hari; OTP berlaku 10 menit dan dibatasi percobaannya. Akun tidak memerlukan password.
 
